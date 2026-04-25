@@ -14,6 +14,7 @@ export default {
       },
       boxShadow: {
         card: '0 8px 24px -12px rgba(13, 148, 136, 0.35)',
+        glass: '0 18px 40px -24px rgba(15, 23, 42, 0.65)',
       },
     },
   },
