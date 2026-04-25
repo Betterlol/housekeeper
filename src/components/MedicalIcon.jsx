@@ -11,6 +11,18 @@ const iconMap = {
       <path d="M8 10h8M8 14h8" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
     </>
   ),
+  reminder: (
+    <>
+      <path
+        d="M12 3a5 5 0 0 0-5 5v2.7l-1.6 2.6c-.7 1.2.1 2.7 1.5 2.7h10.2c1.4 0 2.2-1.5 1.5-2.7L17 10.7V8a5 5 0 0 0-5-5z"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinejoin="round"
+      />
+      <path d="M9.5 18a2.5 2.5 0 0 0 5 0" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+    </>
+  ),
   consult: (
     <>
       <rect x="4" y="4" width="16" height="16" rx="3" fill="none" stroke="currentColor" strokeWidth="2" />

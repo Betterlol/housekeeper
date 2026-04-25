@@ -21,3 +21,31 @@ body {
 #root {
   min-height: 100vh;
 }
+
+@keyframes reminder-overlay-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes reminder-sheet-pop {
+  from {
+    opacity: 0;
+    transform: translateY(20px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.reminder-overlay {
+  animation: reminder-overlay-fade 0.18s ease-out;
+}
+
+.reminder-sheet {
+  animation: reminder-sheet-pop 0.24s ease-out;
+}
