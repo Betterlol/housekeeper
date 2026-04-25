@@ -1,0 +1,79 @@
+- generic [ref=e3]:
+  - generic [ref=e419]:
+    - article [ref=e420]:
+      - paragraph [ref=e421]: 智能购药助手
+      - heading "购药预警中心" [level=1] [ref=e422]
+      - paragraph [ref=e423]: 优先补货低库存药品，避免重复下单
+    - generic [ref=e424]:
+      - article [ref=e425]:
+        - paragraph [ref=e426]: 库存不足提醒
+        - paragraph [ref=e427]: "0"
+      - article [ref=e428]:
+        - paragraph [ref=e429]: 重复购药风险
+        - paragraph [ref=e430]: "2"
+    - generic [ref=e431]:
+      - article [ref=e432]:
+        - generic [ref=e433]:
+          - generic [ref=e434]:
+            - paragraph [ref=e435]: 缬沙坦片
+            - paragraph [ref=e436]: 库存 20片
+            - paragraph [ref=e437]: 预计可用 20 天
+          - generic [ref=e438]: 谨慎下单
+        - generic [ref=e440]:
+          - img [ref=e441]
+          - paragraph [ref=e444]: 当前库存仍可覆盖较长周期，重复购药风险较高。
+        - button "模拟购药（+30片）" [ref=e445] [cursor=pointer]
+      - article [ref=e446]:
+        - generic [ref=e447]:
+          - generic [ref=e448]:
+            - paragraph [ref=e449]: 盐酸二甲双胍片
+            - paragraph [ref=e450]: 库存 45片
+            - paragraph [ref=e451]: 预计可用 22 天
+          - generic [ref=e452]: 谨慎下单
+        - generic [ref=e454]:
+          - img [ref=e455]
+          - paragraph [ref=e458]: 当前库存仍可覆盖较长周期，重复购药风险较高。
+        - button "模拟购药（+30片）" [ref=e459] [cursor=pointer]
+      - article [ref=e460]:
+        - generic [ref=e461]:
+          - generic [ref=e462]:
+            - paragraph [ref=e463]: 阿托伐他汀钙片
+            - paragraph [ref=e464]: 库存 12片
+            - paragraph [ref=e465]: 预计可用 12 天
+          - generic [ref=e466]: 库存正常
+        - generic [ref=e468]:
+          - img [ref=e469]
+          - paragraph [ref=e472]: 库存消耗节奏正常，可按需补货。
+        - button "模拟购药（+30片）" [ref=e473] [cursor=pointer]
+  - navigation [ref=e153]:
+    - list [ref=e154]:
+      - listitem [ref=e155]:
+        - link "首页" [ref=e156] [cursor=pointer]:
+          - /url: /home
+          - img [ref=e158]
+          - text: 首页
+      - listitem [ref=e160]:
+        - link "用药计划" [ref=e161] [cursor=pointer]:
+          - /url: /plan
+          - img [ref=e163]
+          - text: 用药计划
+      - listitem [ref=e166]:
+        - link "提醒" [ref=e167] [cursor=pointer]:
+          - /url: /reminders
+          - img [ref=e169]
+          - text: 提醒
+      - listitem [ref=e172]:
+        - link "AI复诊" [ref=e173] [cursor=pointer]:
+          - /url: /consult
+          - img [ref=e175]
+          - text: AI复诊
+      - listitem [ref=e179]:
+        - link "购药" [active] [ref=e180] [cursor=pointer]:
+          - /url: /purchase
+          - img [ref=e182]
+          - text: 购药
+      - listitem [ref=e185]:
+        - link "我的" [ref=e186] [cursor=pointer]:
+          - /url: /profile
+          - img [ref=e188]
+          - text: 我的

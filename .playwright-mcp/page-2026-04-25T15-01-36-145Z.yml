@@ -1,0 +1,55 @@
+- generic [ref=e3]:
+  - generic [ref=e474]:
+    - generic [ref=e475]:
+      - heading "我的" [level=1] [ref=e476]
+      - paragraph [ref=e477]: 比赛演示配置与数据管理
+    - generic [ref=e478]:
+      - article [ref=e479]:
+        - paragraph [ref=e480]: 慢病档案
+        - paragraph [ref=e481]: 张先生 · 男 · 58岁
+        - paragraph [ref=e482]: 诊断：高血压 + 2型糖尿病
+        - paragraph [ref=e483]: 初诊日期：待补充
+        - paragraph [ref=e484]: 当前为基础 mock 数据，点击“生成答辩演示数据”可切换完整旅程。
+      - article [ref=e485]:
+        - paragraph [ref=e486]: 演示数据状态
+        - paragraph [ref=e487]: 当前模式：基础数据模式
+        - paragraph [ref=e488]: 数据标签：基础数据
+        - paragraph [ref=e489]: 生成时间：未生成
+        - paragraph [ref=e490]: 药品数 3 · 服药记录 4 · 不良反应 0
+      - article [ref=e491]:
+        - paragraph [ref=e492]: 演示工具
+        - paragraph [ref=e493]: 一键生成完整用户旅程数据，快速演示“问诊 - 购药 - 用药 - 续方”闭环。
+        - button "生成答辩演示数据" [ref=e494] [cursor=pointer]
+        - button "重置演示数据" [ref=e495] [cursor=pointer]
+  - navigation [ref=e153]:
+    - list [ref=e154]:
+      - listitem [ref=e155]:
+        - link "首页" [ref=e156] [cursor=pointer]:
+          - /url: /home
+          - img [ref=e158]
+          - text: 首页
+      - listitem [ref=e160]:
+        - link "用药计划" [ref=e161] [cursor=pointer]:
+          - /url: /plan
+          - img [ref=e163]
+          - text: 用药计划
+      - listitem [ref=e166]:
+        - link "提醒" [ref=e167] [cursor=pointer]:
+          - /url: /reminders
+          - img [ref=e169]
+          - text: 提醒
+      - listitem [ref=e172]:
+        - link "AI复诊" [ref=e173] [cursor=pointer]:
+          - /url: /consult
+          - img [ref=e175]
+          - text: AI复诊
+      - listitem [ref=e179]:
+        - link "购药" [ref=e180] [cursor=pointer]:
+          - /url: /purchase
+          - img [ref=e182]
+          - text: 购药
+      - listitem [ref=e185]:
+        - link "我的" [active] [ref=e186] [cursor=pointer]:
+          - /url: /profile
+          - img [ref=e188]
+          - text: 我的

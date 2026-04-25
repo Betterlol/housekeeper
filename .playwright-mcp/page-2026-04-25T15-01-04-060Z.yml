@@ -1,0 +1,134 @@
+- generic [ref=e3]:
+  - generic [ref=e297]:
+    - article [ref=e298]:
+      - paragraph [ref=e299]: 互联网医院 · AI复诊摘要
+      - heading "慢病复诊报告" [level=1] [ref=e300]
+      - paragraph [ref=e301]: 统计周期：04-19 ~ 04-25
+    - article [ref=e302]:
+      - paragraph [ref=e303]: 核心指标
+      - generic [ref=e304]:
+        - generic [ref=e305]:
+          - paragraph [ref=e306]: 用药依从率
+          - paragraph [ref=e307]: 25%
+        - generic [ref=e308]:
+          - paragraph [ref=e309]: 漏服次数
+          - paragraph [ref=e310]: "3"
+        - generic [ref=e311]:
+          - paragraph [ref=e312]: 晚间漏服
+          - paragraph [ref=e313]: "1"
+        - generic [ref=e314]:
+          - paragraph [ref=e315]: 建议复诊时间
+          - paragraph [ref=e316]: 2026-04-30
+    - article [ref=e317]:
+      - generic [ref=e318]:
+        - paragraph [ref=e319]: 7日用药趋势
+        - generic [ref=e320]: 应服 / 实服 / 漏服 / 依从率
+      - generic [ref=e321]:
+        - generic [ref=e322]:
+          - generic [ref=e323]:
+            - generic [ref=e324]: 04/19
+            - generic [ref=e325]: 100%
+          - generic [ref=e326]:
+            - generic [ref=e327]: 应服 0
+            - generic [ref=e328]: 实服 0
+            - generic [ref=e329]: 漏服 0
+        - generic [ref=e332]:
+          - generic [ref=e333]:
+            - generic [ref=e334]: 04/20
+            - generic [ref=e335]: 100%
+          - generic [ref=e336]:
+            - generic [ref=e337]: 应服 0
+            - generic [ref=e338]: 实服 0
+            - generic [ref=e339]: 漏服 0
+        - generic [ref=e342]:
+          - generic [ref=e343]:
+            - generic [ref=e344]: 04/21
+            - generic [ref=e345]: 100%
+          - generic [ref=e346]:
+            - generic [ref=e347]: 应服 0
+            - generic [ref=e348]: 实服 0
+            - generic [ref=e349]: 漏服 0
+        - generic [ref=e352]:
+          - generic [ref=e353]:
+            - generic [ref=e354]: 04/22
+            - generic [ref=e355]: 100%
+          - generic [ref=e356]:
+            - generic [ref=e357]: 应服 0
+            - generic [ref=e358]: 实服 0
+            - generic [ref=e359]: 漏服 0
+        - generic [ref=e362]:
+          - generic [ref=e363]:
+            - generic [ref=e364]: 04/23
+            - generic [ref=e365]: 100%
+          - generic [ref=e366]:
+            - generic [ref=e367]: 应服 0
+            - generic [ref=e368]: 实服 0
+            - generic [ref=e369]: 漏服 0
+        - generic [ref=e372]:
+          - generic [ref=e373]:
+            - generic [ref=e374]: 04/24
+            - generic [ref=e375]: 100%
+          - generic [ref=e376]:
+            - generic [ref=e377]: 应服 0
+            - generic [ref=e378]: 实服 0
+            - generic [ref=e379]: 漏服 0
+        - generic [ref=e382]:
+          - generic [ref=e383]:
+            - generic [ref=e384]: 04/25
+            - generic [ref=e385]: 25%
+          - generic [ref=e386]:
+            - generic [ref=e387]: 应服 4
+            - generic [ref=e388]: 实服 1
+            - generic [ref=e389]: 漏服 3
+    - article [ref=e394]:
+      - generic [ref=e395]:
+        - img [ref=e397]
+        - generic [ref=e401]:
+          - paragraph [ref=e402]: AI生成问诊摘要
+          - paragraph [ref=e403]: 近7天依从率偏低，建议尽快复诊评估当前方案，重点沟通晚间漏服场景与提醒策略。
+          - paragraph [ref=e404]: 最近漏服日期：2026-04-25
+          - button "复制复诊摘要" [ref=e405] [cursor=pointer]
+    - article [ref=e406]:
+      - paragraph [ref=e407]: 医生可读报告卡片
+      - generic [ref=e408]:
+        - paragraph [ref=e409]: 患者基本情况：张先生，男，58岁，慢病诊断高血压、2型糖尿病。
+        - paragraph [ref=e410]: 近7日用药依从率：25% ，总体执行偏低。
+        - paragraph [ref=e411]: 漏服风险：中高风险，漏服主要集中在晚间场景，建议与患者讨论提醒方式和家属协同监督。
+        - paragraph [ref=e412]: 不良反应：近7天未记录明确不良反应。
+        - paragraph [ref=e413]: 续方建议：阿托伐他汀钙片 预计剩余 12 天，建议在 3-5 天内完成复诊续方，避免断药。
+        - paragraph [ref=e414]: 医生沟通重点：
+        - paragraph [ref=e415]: 1. 确认晚间服药执行障碍（外出、遗忘、睡前作息不固定）并制定替代提醒方案。
+        - paragraph [ref=e416]: 2. 复核现有血压/血糖控制目标，结合依从率变化评估是否需要调整剂量。
+        - paragraph [ref=e417]: 3. 明确续方时间节点与购药计划，减少重复购药与断药并存的风险。
+  - navigation [ref=e153]:
+    - list [ref=e154]:
+      - listitem [ref=e155]:
+        - link "首页" [ref=e156] [cursor=pointer]:
+          - /url: /home
+          - img [ref=e158]
+          - text: 首页
+      - listitem [ref=e160]:
+        - link "用药计划" [ref=e161] [cursor=pointer]:
+          - /url: /plan
+          - img [ref=e163]
+          - text: 用药计划
+      - listitem [ref=e166]:
+        - link "提醒" [ref=e167] [cursor=pointer]:
+          - /url: /reminders
+          - img [ref=e169]
+          - text: 提醒
+      - listitem [ref=e172]:
+        - link "AI复诊" [active] [ref=e173] [cursor=pointer]:
+          - /url: /consult
+          - img [ref=e175]
+          - text: AI复诊
+      - listitem [ref=e179]:
+        - link "购药" [ref=e180] [cursor=pointer]:
+          - /url: /purchase
+          - img [ref=e182]
+          - text: 购药
+      - listitem [ref=e185]:
+        - link "我的" [ref=e186] [cursor=pointer]:
+          - /url: /profile
+          - img [ref=e188]
+          - text: 我的
