@@ -463,6 +463,27 @@ export function buildConsultCopyText(store) {
   ].join('\n')
 }
 
+function hashText(input = '') {
+  let hash = 0
+  for (let i = 0; i < input.length; i += 1) {
+    hash = (hash << 5) - hash + input.charCodeAt(i)
+    hash |= 0
+  }
+  return Math.abs(hash)
+}
+
+function inferUnitPerPack(spec = '') {
+  const matched = String(spec).match(/[xX*×](\d+)\s*片/)
+  if (matched?.[1]) return Number(matched[1])
+  return 14
+}
+
+function formatPrice(seed) {
+  const integer = 18 + (seed % 35)
+  const decimal = (seed % 10)
+  return `¥${integer}.${decimal}`
+}
+
 export function getPurchaseInsights(input, maybeRules = []) {
   const context = Array.isArray(input)
     ? { medications: input, reminderRules: maybeRules }
@@ -472,14 +493,44 @@ export function getPurchaseInsights(input, maybeRules = []) {
   const reminderRules = context.reminderRules || []
 
   return medications.map((medication) => {
+    const seed = hashText(`${medication.id}|${medication.drugName}|${medication.spec}`)
     const rulesForMedication = reminderRules.filter((rule) => rule.medicationId === medication.id && rule.enabled)
     const frequency = resolveMedicationFrequency(medication, rulesForMedication)
     const dailyUse = Math.max(1, Number(medication.dose || 1) * frequency)
     const stock = Number(medication.stockQty || 0)
     const remainingDays = Math.floor(stock / dailyUse)
+    const unitPerPack = inferUnitPerPack(medication.spec)
 
     const lowStock = remainingDays <= 7
     const duplicateRisk = remainingDays >= 20
+    const recommendPurchase = lowStock || (remainingDays > 7 && remainingDays <= 14)
+    const targetDays = lowStock ? 30 : 20
+    const recommendPurchaseQty = recommendPurchase
+      ? Math.max(unitPerPack, Math.ceil((targetDays * dailyUse - stock) / unitPerPack) * unitPerPack)
+      : 0
+
+    const pharmacyStockStates = ['库存充足', '库存紧张', '仅剩少量']
+    const etaOptions = ['预计30分钟送达', '预计45分钟送达', '预计60分钟送达']
+    const pharmacyStock = lowStock
+      ? pharmacyStockStates[seed % 2]
+      : pharmacyStockStates[seed % pharmacyStockStates.length]
+    const deliveryEta = etaOptions[seed % etaOptions.length]
+
+    const tags = ['慢病常备']
+    if (lowStock) {
+      tags.push('即将不足')
+      tags.push('AI推荐补货')
+    } else if (duplicateRisk) {
+      tags.push('重复购药风险')
+    } else {
+      tags.push('库存稳态')
+    }
+
+    const riskLabel = lowStock
+      ? '建议补货'
+      : duplicateRisk
+        ? '暂不建议购买'
+        : '可按需备药'
 
     return {
       ...medication,
@@ -487,6 +538,14 @@ export function getPurchaseInsights(input, maybeRules = []) {
       remainingDays,
       lowStock,
       duplicateRisk,
+      recommendPurchase,
+      recommendPurchaseQty,
+      unitPerPack,
+      mockPrice: formatPrice(seed),
+      pharmacyStock,
+      deliveryEta,
+      riskLabel,
+      tags,
       riskMessage: lowStock
         ? `${medication.drugName} 预计 ${Math.max(remainingDays, 0)} 天后用完，建议优先补货并发起续方。`
         : duplicateRisk
