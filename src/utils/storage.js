@@ -1,176 +1,1465 @@
-import { mockStore } from '../data/mock';
+import { mockStore } from '../data/mock'
 
-const STORAGE_KEY = 'housekeeper-med-app-v1';
-export const STORE_UPDATED_EVENT = 'housekeeper-store-updated';
+const STORAGE_KEY = 'housekeeper-med-app-v1'
+export const STORE_UPDATED_EVENT = 'housekeeper-store-updated'
 
-export const REMINDER_STATUSES = [
-  'scheduled',
-  'notified',
-  'snoozed',
-  'taken',
-  'skipped',
-  'missed',
-];
+export const VISIBLE_REMINDER_STATUSES = ['off', 'pending', 'taken', 'missed', 'skipped']
+export const INTERNAL_REMINDER_STATUSES = ['waiting', 'ringing', 'snoozed', 'retrying', 'completed', 'expired']
 
-const FINAL_REMINDER_STATUS_SET = new Set(['taken', 'skipped', 'missed']);
-const MISSED_THRESHOLD_MS = 2 * 60 * 60 * 1000;
+const FINAL_VISIBLE_STATUS_SET = new Set(['taken', 'missed', 'skipped'])
+const DEFAULT_REPEAT_DAYS = [0, 1, 2, 3, 4, 5, 6]
 
-const clone = (obj) => JSON.parse(JSON.stringify(obj));
+const clone = (obj) => JSON.parse(JSON.stringify(obj))
 
 function toDateKey(date) {
-  return date.toISOString().slice(0, 10);
+  return date.toISOString().slice(0, 10)
+}
+
+function toDateTime(dateKey, time) {
+  return `${dateKey}T${time}`
 }
 
 function addDays(date, days) {
-  const next = new Date(date);
-  next.setDate(next.getDate() + days);
-  return next;
+  const next = new Date(date)
+  next.setDate(next.getDate() + days)
+  return next
+}
+
+function toTime(iso) {
+  if (!iso || !iso.includes('T')) return '08:00'
+  return iso.slice(11, 16)
+}
+
+function toInt(value, fallback = 0) {
+  const next = Number(value)
+  if (Number.isNaN(next)) return fallback
+  return Math.round(next)
+}
+
+function toPositiveInt(value, fallback = 1) {
+  const resolved = toInt(value, fallback)
+  return resolved > 0 ? resolved : fallback
+}
+
+function toNonNegativeInt(value, fallback = 0) {
+  const resolved = toInt(value, fallback)
+  return resolved >= 0 ? resolved : fallback
+}
+
+function nowIso() {
+  return new Date().toISOString()
+}
+
+function getDefaultUserProfile() {
+  return {
+    name: '张先生',
+    age: 58,
+    gender: '男',
+    diseases: ['高血压', '2型糖尿病'],
+    diagnosisDate: '2018-03-12',
+    note: '请按时服药并按期复诊。',
+  }
 }
 
 function emitStoreUpdated() {
-  if (typeof window === 'undefined') return;
-  window.dispatchEvent(new CustomEvent(STORE_UPDATED_EVENT));
+  if (typeof window === 'undefined') return
+  window.dispatchEvent(new CustomEvent(STORE_UPDATED_EVENT))
 }
 
-function isValidReminderStatus(status) {
-  return REMINDER_STATUSES.includes(status);
+function isMedicationActiveOnDate(medication, dateKey) {
+  const startOk = !medication.startDate || medication.startDate <= dateKey
+  const endOk = !medication.endDate || medication.endDate >= dateKey
+  return startOk && endOk
 }
 
-function normalizeReminderStatus(status) {
-  if (status === 'pending') return 'scheduled';
-  if (isValidReminderStatus(status)) return status;
-  if (status === 'taken') return 'taken';
-  if (status === 'missed') return 'missed';
-  return 'scheduled';
+function isRuleEnabledOnDate(rule, dateKey) {
+  const day = new Date(`${dateKey}T00:00:00`).getDay()
+  const repeatDays = Array.isArray(rule.repeatDays) && rule.repeatDays.length > 0
+    ? rule.repeatDays
+    : DEFAULT_REPEAT_DAYS
+
+  return repeatDays.includes(day)
 }
 
-function normalizeLog(log) {
-  const normalizedStatus = normalizeReminderStatus(log?.reminderStatus || log?.status);
+function isVisibleStatus(status) {
+  return VISIBLE_REMINDER_STATUSES.includes(status)
+}
+
+function isInternalStatus(status) {
+  return INTERNAL_REMINDER_STATUSES.includes(status)
+}
+
+function normalizeVisibleStatus(status) {
+  if (status === 'scheduled' || status === 'notified' || status === 'snoozed') return 'pending'
+  if (status === 'disabled' || status === 'closed') return 'off'
+  if (isVisibleStatus(status)) return status
+  return 'pending'
+}
+
+function normalizeInternalStatus(status, visibleStatus) {
+  if (isInternalStatus(status)) return status
+
+  if (status === 'scheduled') return 'waiting'
+  if (status === 'notified') return 'ringing'
+  if (status === 'snoozed') return 'snoozed'
+
+  if (visibleStatus === 'taken' || visibleStatus === 'skipped') return 'completed'
+  if (visibleStatus === 'missed' || visibleStatus === 'off') return 'expired'
+  return 'waiting'
+}
+
+function normalizeMedication(medication = {}, index = 0) {
+  return {
+    id: medication.id || `med-${Date.now()}-${index}`,
+    drugName: medication.drugName || '未命名药品',
+    spec: medication.spec || '',
+    dose: Number(medication.dose || 1),
+    unit: medication.unit || '片',
+    withMeal: medication.withMeal || '按医嘱',
+    stockQty: Number(medication.stockQty || 0),
+    stockUnit: medication.stockUnit || '片',
+    startDate: medication.startDate || toDateKey(new Date()),
+    endDate: medication.endDate || '',
+    sourceLabel: medication.sourceLabel || medication.source || '手动录入',
+    frequencyPerDay: toPositiveInt(medication.frequencyPerDay, 1),
+    times: Array.isArray(medication.times)
+      ? medication.times
+      : typeof medication.times === 'string'
+        ? medication.times.split(',').map((item) => item.trim()).filter(Boolean)
+        : [],
+  }
+}
+
+function normalizeReminderRule(rule = {}, index = 0) {
+  const repeatDays = Array.isArray(rule.repeatDays) && rule.repeatDays.length > 0
+    ? rule.repeatDays.map((day) => toNonNegativeInt(day, 0)).filter((day) => day >= 0 && day <= 6)
+    : DEFAULT_REPEAT_DAYS
+
+  const createdAt = rule.createdAt || nowIso()
 
   return {
-    ...log,
-    status: normalizedStatus,
-    reminderStatus: normalizedStatus,
-    snoozeUntil: log?.snoozeUntil || '',
-    notifiedAt: log?.notifiedAt || '',
-    takenAt: log?.takenAt || '',
-    reason: log?.reason || '',
-  };
+    id: rule.id || `rule-${Date.now()}-${index}`,
+    medicationId: rule.medicationId || rule.medId || '',
+    time: rule.time || '08:00',
+    enabled: typeof rule.enabled === 'boolean' ? rule.enabled : true,
+    repeatDays,
+    retryIntervalMinutes: toPositiveInt(rule.retryIntervalMinutes, 5),
+    maxRetryCount: toNonNegativeInt(rule.maxRetryCount, 3),
+    createdAt,
+    updatedAt: rule.updatedAt || createdAt,
+  }
 }
 
-function normalizeStoreSchema(store) {
+function normalizeReminderInstance(instance = {}, index = 0) {
+  const visibleStatus = normalizeVisibleStatus(
+    instance.visibleStatus || instance.reminderStatus || instance.status || 'pending'
+  )
+
+  const scheduledAt = instance.scheduledAt || toDateTime(toDateKey(new Date()), '08:00')
+  const currentTriggerAt = instance.currentTriggerAt || instance.snoozeUntil || scheduledAt
+
+  return {
+    id: instance.id || `instance-${Date.now()}-${index}`,
+    ruleId: instance.ruleId || '',
+    medicationId: instance.medicationId || instance.medId || '',
+    scheduledAt,
+    currentTriggerAt,
+    retryCount: toNonNegativeInt(instance.retryCount, 0),
+    internalStatus: normalizeInternalStatus(instance.internalStatus || instance.status, visibleStatus),
+    visibleStatus,
+    lastNotifiedAt: instance.lastNotifiedAt || instance.notifiedAt || '',
+    notifiedAt: instance.notifiedAt || instance.lastNotifiedAt || '',
+    completedAt: instance.completedAt || instance.takenAt || '',
+    reminderStatus: visibleStatus,
+    status: visibleStatus,
+    snoozeUntil: instance.snoozeUntil || '',
+    takenAt: instance.takenAt || '',
+  }
+}
+
+function normalizeIntakeLog(log = {}, index = 0) {
+  const status = normalizeVisibleStatus(log.status || log.reminderStatus || 'pending')
+
+  return {
+    id: log.id || `log-${Date.now()}-${index}`,
+    medicationId: log.medicationId || log.medId || '',
+    medId: log.medicationId || log.medId || '',
+    reminderInstanceId: log.reminderInstanceId || '',
+    scheduledAt: log.scheduledAt || toDateTime(toDateKey(new Date()), '08:00'),
+    takenAt: log.takenAt || '',
+    status,
+    reason: log.reason || '',
+    reminderStatus: status,
+  }
+}
+
+function normalizeUserProfile(profile = {}) {
+  const fallback = getDefaultUserProfile()
+  const diseases = Array.isArray(profile.diseases)
+    ? profile.diseases
+    : typeof profile.diseases === 'string'
+      ? profile.diseases.split(/[,，]/).map((item) => item.trim()).filter(Boolean)
+      : fallback.diseases
+
+  return {
+    name: profile.name || fallback.name,
+    age: toPositiveInt(profile.age, fallback.age),
+    gender: profile.gender || fallback.gender,
+    diseases,
+    diagnosisDate: profile.diagnosisDate || fallback.diagnosisDate,
+    note: profile.note || fallback.note,
+  }
+}
+
+function buildLegacyRulesFromMedications(medications) {
+  const rules = []
+
+  medications.forEach((medication, medIndex) => {
+    const legacyTimes = Array.isArray(medication.times) && medication.times.length > 0
+      ? medication.times
+      : ['08:00']
+
+    legacyTimes.forEach((time, timeIndex) => {
+      rules.push(
+        normalizeReminderRule({
+          id: `rule-legacy-${medication.id}-${timeIndex}`,
+          medicationId: medication.id,
+          time,
+          enabled: true,
+          repeatDays: DEFAULT_REPEAT_DAYS,
+          retryIntervalMinutes: 5,
+          maxRetryCount: 3,
+          createdAt: medication.createdAt || nowIso(),
+          updatedAt: medication.updatedAt || nowIso(),
+        }, `${medIndex}-${timeIndex}`)
+      )
+    })
+  })
+
+  return rules
+}
+
+function ensureRuleForLegacyLog(reminderRules, log) {
+  const medId = log.medicationId || log.medId || ''
+  const time = toTime(log.scheduledAt)
+  const key = `${medId}|${time}`
+
+  const existing = reminderRules.find((rule) => `${rule.medicationId}|${rule.time}` === key)
+  if (existing) return existing
+
+  const rule = normalizeReminderRule({
+    id: `rule-migrate-${medId}-${time}`,
+    medicationId: medId,
+    time,
+    enabled: true,
+    repeatDays: DEFAULT_REPEAT_DAYS,
+    retryIntervalMinutes: 5,
+    maxRetryCount: 3,
+  })
+
+  reminderRules.push(rule)
+  return rule
+}
+
+function mapLegacyLogToInstance(log, rule, index) {
+  const visibleStatus = normalizeVisibleStatus(log.status || log.reminderStatus || 'pending')
+
+  return normalizeReminderInstance({
+    id: `instance-migrate-${index}`,
+    ruleId: rule.id,
+    medicationId: log.medicationId || log.medId || '',
+    scheduledAt: log.scheduledAt,
+    currentTriggerAt: log.snoozeUntil || log.scheduledAt,
+    retryCount: toNonNegativeInt(log.retryCount, log.status === 'snoozed' ? 1 : 0),
+    internalStatus: normalizeInternalStatus(log.status, visibleStatus),
+    visibleStatus,
+    lastNotifiedAt: log.notifiedAt || '',
+    completedAt: visibleStatus === 'taken' ? log.takenAt || '' : '',
+    takenAt: log.takenAt || '',
+    reason: log.reason || '',
+  })
+}
+
+function upsertFinalLogForInstance(store, instance, reason = '') {
+  if (!FINAL_VISIBLE_STATUS_SET.has(instance.visibleStatus)) return store
+
+  const existingIndex = (store.intakeLogs || []).findIndex(
+    (log) => log.reminderInstanceId === instance.id
+  )
+
+  const nextLog = normalizeIntakeLog({
+    id: existingIndex >= 0 ? store.intakeLogs[existingIndex].id : `log-${Date.now()}-${instance.id}`,
+    medicationId: instance.medicationId,
+    medId: instance.medicationId,
+    reminderInstanceId: instance.id,
+    scheduledAt: instance.scheduledAt,
+    takenAt: instance.visibleStatus === 'taken' ? (instance.completedAt || nowIso()) : '',
+    status: instance.visibleStatus,
+    reason,
+  })
+
+  if (existingIndex >= 0) {
+    const nextLogs = [...store.intakeLogs]
+    nextLogs[existingIndex] = nextLog
+    return { ...store, intakeLogs: nextLogs }
+  }
+
   return {
     ...store,
-    medications: Array.isArray(store.medications) ? store.medications : [],
-    intakeLogs: Array.isArray(store.intakeLogs) ? store.intakeLogs.map(normalizeLog) : [],
-    reminderQueue: Array.isArray(store.reminderQueue) ? store.reminderQueue : [],
-  };
+    intakeLogs: [nextLog, ...(store.intakeLogs || [])],
+  }
 }
 
-function isMedActiveOnDate(medication, dateKey) {
-  const startOk = !medication.startDate || medication.startDate <= dateKey;
-  const endOk = !medication.endDate || medication.endDate >= dateKey;
-  return startOk && endOk;
+function normalizeStoreSchema(rawStore = {}) {
+  const base = rawStore || {}
+
+  const medications = Array.isArray(base.medications)
+    ? base.medications.map((item, index) => normalizeMedication(item, index))
+    : []
+
+  let reminderRules = Array.isArray(base.reminderRules)
+    ? base.reminderRules.map((item, index) => normalizeReminderRule(item, index))
+    : []
+
+  if (reminderRules.length === 0) {
+    reminderRules = buildLegacyRulesFromMedications(medications)
+  }
+
+  let reminderInstances = Array.isArray(base.reminderInstances)
+    ? base.reminderInstances.map((item, index) => normalizeReminderInstance(item, index))
+    : []
+
+  const legacyLogs = Array.isArray(base.intakeLogs)
+    ? base.intakeLogs.map((item, index) => normalizeIntakeLog(item, index))
+    : []
+
+  if (reminderInstances.length === 0 && legacyLogs.length > 0) {
+    reminderInstances = legacyLogs.map((log, index) => {
+      const rule = ensureRuleForLegacyLog(reminderRules, log)
+      return mapLegacyLogToInstance(log, rule, index)
+    })
+  }
+
+  reminderInstances = reminderInstances.map((instance) => {
+    if (instance.ruleId) return instance
+
+    const rule = reminderRules.find(
+      (item) => item.medicationId === instance.medicationId && item.time === toTime(instance.scheduledAt)
+    )
+
+    if (rule) {
+      return {
+        ...instance,
+        ruleId: rule.id,
+      }
+    }
+
+    const fallbackRule = normalizeReminderRule({
+      id: `rule-auto-${instance.medicationId}-${toTime(instance.scheduledAt)}`,
+      medicationId: instance.medicationId,
+      time: toTime(instance.scheduledAt),
+      enabled: true,
+      repeatDays: DEFAULT_REPEAT_DAYS,
+      retryIntervalMinutes: 5,
+      maxRetryCount: 3,
+    })
+
+    reminderRules.push(fallbackRule)
+
+    return {
+      ...instance,
+      ruleId: fallbackRule.id,
+    }
+  })
+
+  let intakeLogs = legacyLogs
+
+  reminderInstances.forEach((instance) => {
+    if (!FINAL_VISIBLE_STATUS_SET.has(instance.visibleStatus)) return
+
+    if (intakeLogs.some((log) => log.reminderInstanceId === instance.id)) return
+
+    intakeLogs = [
+      normalizeIntakeLog({
+        id: `log-instance-${instance.id}`,
+        medicationId: instance.medicationId,
+        medId: instance.medicationId,
+        reminderInstanceId: instance.id,
+        scheduledAt: instance.scheduledAt,
+        takenAt: instance.visibleStatus === 'taken' ? (instance.completedAt || instance.takenAt || '') : '',
+        status: instance.visibleStatus,
+        reason: '',
+      }),
+      ...intakeLogs,
+    ]
+  })
+
+  const normalizedQueue = Array.isArray(base.reminderQueue)
+    ? base.reminderQueue.filter((id) => reminderInstances.some((instance) => instance.id === id))
+    : reminderInstances
+      .filter((instance) => instance.internalStatus === 'ringing' && instance.visibleStatus === 'pending')
+      .map((instance) => instance.id)
+
+  const userProfile = normalizeUserProfile(base.userProfile || {})
+
+  return {
+    ...base,
+    schemaVersion: 2,
+    medications,
+    reminderRules,
+    reminderInstances,
+    intakeLogs,
+    reminderQueue: normalizedQueue,
+    userProfile,
+    adverseEvents: Array.isArray(base.adverseEvents) ? base.adverseEvents : [],
+    demoMeta: base.demoMeta || {
+      mode: 'default',
+      generatedAt: '',
+      label: '基础数据',
+    },
+  }
 }
 
-function compareBySchedule(a, b) {
-  if (a.scheduledAt === b.scheduledAt) return a.id > b.id ? 1 : -1;
-  return a.scheduledAt > b.scheduledAt ? 1 : -1;
+function compareIso(a, b) {
+  if (a === b) return 0
+  return a > b ? 1 : -1
+}
+
+function syncInstancesForDate(store, dateKey = toDateKey(new Date())) {
+  let changed = false
+  let nextInstances = [...(store.reminderInstances || [])]
+  const queueSet = new Set(store.reminderQueue || [])
+
+  ;(store.reminderRules || []).forEach((rule) => {
+    const medication = (store.medications || []).find((item) => item.id === rule.medicationId)
+    if (!medication) return
+    if (!isMedicationActiveOnDate(medication, dateKey)) return
+    if (!isRuleEnabledOnDate(rule, dateKey)) return
+
+    const scheduledAt = toDateTime(dateKey, rule.time)
+
+    nextInstances = nextInstances.filter((instance) => {
+      if (
+        instance.ruleId === rule.id
+        && (instance.scheduledAt || '').startsWith(dateKey)
+        && instance.scheduledAt !== scheduledAt
+        && !FINAL_VISIBLE_STATUS_SET.has(instance.visibleStatus)
+      ) {
+        queueSet.delete(instance.id)
+        changed = true
+        return false
+      }
+
+      return true
+    })
+
+    const targetIndex = nextInstances.findIndex(
+      (instance) => instance.ruleId === rule.id && instance.scheduledAt === scheduledAt
+    )
+
+    if (targetIndex === -1) {
+      const nextInstance = normalizeReminderInstance({
+        id: `instance-${Date.now()}-${rule.id}`,
+        ruleId: rule.id,
+        medicationId: medication.id,
+        scheduledAt,
+        currentTriggerAt: scheduledAt,
+        retryCount: 0,
+        internalStatus: rule.enabled ? 'waiting' : 'expired',
+        visibleStatus: rule.enabled ? 'pending' : 'off',
+        lastNotifiedAt: '',
+        completedAt: '',
+      })
+
+      nextInstances.push(nextInstance)
+      changed = true
+      return
+    }
+
+    const current = normalizeReminderInstance(nextInstances[targetIndex])
+    if (FINAL_VISIBLE_STATUS_SET.has(current.visibleStatus)) {
+      nextInstances[targetIndex] = {
+        ...current,
+        medicationId: medication.id,
+        ruleId: rule.id,
+      }
+      return
+    }
+
+    let next = {
+      ...current,
+      medicationId: medication.id,
+      ruleId: rule.id,
+    }
+
+    if (!rule.enabled && current.visibleStatus !== 'off') {
+      next = {
+        ...next,
+        visibleStatus: 'off',
+        status: 'off',
+        reminderStatus: 'off',
+        internalStatus: 'expired',
+        currentTriggerAt: scheduledAt,
+      }
+
+      queueSet.delete(next.id)
+      changed = true
+    }
+
+    if (rule.enabled && current.visibleStatus === 'off') {
+      next = {
+        ...next,
+        visibleStatus: 'pending',
+        status: 'pending',
+        reminderStatus: 'pending',
+        internalStatus: 'waiting',
+        currentTriggerAt: compareIso(current.currentTriggerAt || scheduledAt, scheduledAt) < 0
+          ? scheduledAt
+          : current.currentTriggerAt || scheduledAt,
+      }
+
+      changed = true
+    }
+
+    nextInstances[targetIndex] = next
+  })
+
+  if (!changed) {
+    return {
+      changed: false,
+      nextStore: store,
+    }
+  }
+
+  return {
+    changed: true,
+    nextStore: {
+      ...store,
+      reminderInstances: nextInstances,
+      reminderQueue: Array.from(queueSet),
+    },
+  }
+}
+
+function getTodayDateKeyInner() {
+  return toDateKey(new Date())
+}
+
+function getTodayInstancesFromStore(store, dateKey = getTodayDateKeyInner()) {
+  return (store.reminderInstances || [])
+    .filter((item) => (item.scheduledAt || '').startsWith(dateKey))
+    .sort((a, b) => compareIso(a.scheduledAt, b.scheduledAt))
+}
+
+function withInstanceUpdate(store, instanceId, updater) {
+  let changed = false
+  let updated = null
+
+  const reminderInstances = (store.reminderInstances || []).map((instance) => {
+    if (instance.id !== instanceId) return instance
+
+    const next = normalizeReminderInstance(updater(instance))
+    changed = true
+    updated = next
+    return next
+  })
+
+  return {
+    changed,
+    updated,
+    nextStore: changed
+      ? {
+          ...store,
+          reminderInstances,
+        }
+      : store,
+  }
+}
+
+function enrichInstance(store, instance) {
+  const medication = (store.medications || []).find((item) => item.id === instance.medicationId) || null
+  const rule = (store.reminderRules || []).find((item) => item.id === instance.ruleId) || null
+
+  return {
+    ...instance,
+    medication,
+    rule,
+    dueAt: instance.currentTriggerAt || instance.scheduledAt,
+    status: instance.visibleStatus,
+  }
+}
+
+export function subscribeStoreUpdates(callback) {
+  if (typeof window === 'undefined') return () => {}
+
+  window.addEventListener(STORE_UPDATED_EVENT, callback)
+  return () => window.removeEventListener(STORE_UPDATED_EVENT, callback)
+}
+
+export function initStore() {
+  const existing = window.localStorage.getItem(STORAGE_KEY)
+  if (existing) return
+
+  const seeded = normalizeStoreSchema(mockStore)
+  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(seeded))
+}
+
+export function getStore() {
+  const raw = window.localStorage.getItem(STORAGE_KEY)
+
+  if (!raw) {
+    initStore()
+    return normalizeStoreSchema(clone(mockStore))
+  }
+
+  try {
+    const parsed = JSON.parse(raw)
+    const normalized = normalizeStoreSchema(parsed)
+
+    if (JSON.stringify(parsed) !== JSON.stringify(normalized)) {
+      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(normalized))
+    }
+
+    return normalized
+  } catch (error) {
+    const fallback = normalizeStoreSchema(clone(mockStore))
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(fallback))
+    return fallback
+  }
+}
+
+export function setStore(nextStore) {
+  const normalized = normalizeStoreSchema(nextStore)
+  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(normalized))
+  emitStoreUpdated()
+}
+
+export function getTodayDateKey() {
+  return getTodayDateKeyInner()
+}
+
+export function ensureTodayReminderInstances(dateKey = getTodayDateKey()) {
+  const store = getStore()
+  const { changed, nextStore } = syncInstancesForDate(store, dateKey)
+
+  if (changed) {
+    setStore(nextStore)
+    return nextStore
+  }
+
+  return store
+}
+
+export function ensureTodayReminderLogs(dateKey = getTodayDateKey()) {
+  return ensureTodayReminderInstances(dateKey)
+}
+
+export function getMedications() {
+  return getStore().medications || []
+}
+
+export function getIntakeLogs() {
+  return getStore().intakeLogs || []
+}
+
+export function getTodayReminderItemsFromStore(store, dateKey = getTodayDateKey()) {
+  const { nextStore } = syncInstancesForDate(store, dateKey)
+  const ruleList = nextStore.reminderRules || []
+  const medList = nextStore.medications || []
+  const instanceList = getTodayInstancesFromStore(nextStore, dateKey)
+
+  const rows = []
+
+  ruleList.forEach((rule) => {
+    const medication = medList.find((item) => item.id === rule.medicationId)
+    if (!medication) return
+    if (!isMedicationActiveOnDate(medication, dateKey)) return
+    if (!isRuleEnabledOnDate(rule, dateKey)) return
+
+    const scheduledAt = toDateTime(dateKey, rule.time)
+
+    const instance = instanceList.find(
+      (item) => item.ruleId === rule.id && item.scheduledAt === scheduledAt
+    ) || normalizeReminderInstance({
+      id: `virtual-${rule.id}-${dateKey}`,
+      ruleId: rule.id,
+      medicationId: rule.medicationId,
+      scheduledAt,
+      currentTriggerAt: scheduledAt,
+      retryCount: 0,
+      internalStatus: rule.enabled ? 'waiting' : 'expired',
+      visibleStatus: rule.enabled ? 'pending' : 'off',
+    })
+
+    const visibleStatus = rule.enabled ? instance.visibleStatus : 'off'
+
+    rows.push({
+      ...instance,
+      id: instance.id,
+      ruleId: rule.id,
+      medicationId: medication.id,
+      scheduledAt,
+      dueAt: visibleStatus === 'pending' ? (instance.currentTriggerAt || scheduledAt) : '',
+      status: visibleStatus,
+      visibleStatus,
+      internalStatus: instance.internalStatus,
+      medication,
+      rule,
+    })
+  })
+
+  return rows.sort((a, b) => compareIso(a.scheduledAt, b.scheduledAt))
+}
+
+export function getTodayReminderItems(dateKey = getTodayDateKey()) {
+  const store = ensureTodayReminderInstances(dateKey)
+  return getTodayReminderItemsFromStore(store, dateKey)
+}
+
+export function getReminderRulesWithToday(dateKey = getTodayDateKey()) {
+  const store = ensureTodayReminderInstances(dateKey)
+  const todayItems = getTodayReminderItemsFromStore(store, dateKey)
+
+  return (store.reminderRules || [])
+    .map((rule) => {
+      const medication = (store.medications || []).find((item) => item.id === rule.medicationId) || null
+      const todayItem = todayItems.find((item) => item.ruleId === rule.id) || null
+
+      let nextTriggerAt = ''
+      if (!rule.enabled) {
+        nextTriggerAt = ''
+      } else if (todayItem && todayItem.visibleStatus === 'pending') {
+        nextTriggerAt = todayItem.dueAt || todayItem.scheduledAt
+      } else {
+        for (let i = 1; i <= 14; i += 1) {
+          const day = addDays(new Date(`${dateKey}T00:00:00`), i)
+          const dayKey = toDateKey(day)
+          if (!isRuleEnabledOnDate(rule, dayKey)) continue
+          if (!medication || !isMedicationActiveOnDate(medication, dayKey)) continue
+          nextTriggerAt = toDateTime(dayKey, rule.time)
+          break
+        }
+      }
+
+      return {
+        ...rule,
+        medication,
+        todayItem,
+        todayStatus: !rule.enabled
+          ? 'off'
+          : todayItem
+            ? todayItem.visibleStatus
+            : 'pending',
+        nextTriggerAt,
+      }
+    })
+    .filter((item) => item.medication)
+    .sort((a, b) => compareIso(a.time, b.time))
+}
+
+export function getReminderQueueItems() {
+  const store = getStore()
+  const queueSet = new Set(store.reminderQueue || [])
+
+  return (store.reminderInstances || [])
+    .filter((instance) => queueSet.has(instance.id))
+    .filter((instance) => instance.visibleStatus === 'pending' && instance.internalStatus === 'ringing')
+    .map((instance) => {
+      const enriched = enrichInstance(store, instance)
+      const maxRetryCount = enriched.rule?.maxRetryCount ?? 3
+
+      return {
+        ...enriched,
+        attemptNo: instance.retryCount + 1,
+        remainingRetryCount: Math.max(maxRetryCount - instance.retryCount, 0),
+      }
+    })
+    .sort((a, b) => compareIso(a.currentTriggerAt, b.currentTriggerAt))
+}
+
+export function addMedication(payload) {
+  const store = getStore()
+
+  const medication = normalizeMedication({
+    id: `med-${Date.now()}`,
+    ...payload,
+  })
+
+  setStore({
+    ...store,
+    medications: [medication, ...(store.medications || [])],
+  })
+
+  return medication
+}
+
+export function updateMedication(medicationId, payload) {
+  const store = getStore()
+
+  const medications = (store.medications || []).map((medication) =>
+    medication.id === medicationId
+      ? normalizeMedication({
+          ...medication,
+          ...payload,
+          id: medication.id,
+        })
+      : medication
+  )
+
+  setStore({
+    ...store,
+    medications,
+  })
+}
+
+export function deleteMedication(medicationId) {
+  const store = getStore()
+
+  const deletedRuleIds = new Set(
+    (store.reminderRules || [])
+      .filter((rule) => rule.medicationId === medicationId)
+      .map((rule) => rule.id)
+  )
+
+  const deletedInstanceIds = new Set(
+    (store.reminderInstances || [])
+      .filter((instance) => instance.medicationId === medicationId || deletedRuleIds.has(instance.ruleId))
+      .map((instance) => instance.id)
+  )
+
+  const nextStore = {
+    ...store,
+    medications: (store.medications || []).filter((item) => item.id !== medicationId),
+    reminderRules: (store.reminderRules || []).filter((rule) => !deletedRuleIds.has(rule.id)),
+    reminderInstances: (store.reminderInstances || []).filter((instance) => !deletedInstanceIds.has(instance.id)),
+    intakeLogs: (store.intakeLogs || []).filter(
+      (log) => log.medicationId !== medicationId && !deletedInstanceIds.has(log.reminderInstanceId)
+    ),
+    reminderQueue: (store.reminderQueue || []).filter((id) => !deletedInstanceIds.has(id)),
+  }
+
+  setStore(nextStore)
+}
+
+export function addReminderRule(payload) {
+  const store = getStore()
+
+  const medication = (store.medications || []).find((item) => item.id === payload.medicationId)
+  if (!medication) return null
+
+  const createdAt = nowIso()
+
+  const rule = normalizeReminderRule({
+    id: `rule-${Date.now()}`,
+    medicationId: payload.medicationId,
+    time: payload.time,
+    enabled: payload.enabled,
+    repeatDays: payload.repeatDays,
+    retryIntervalMinutes: payload.retryIntervalMinutes,
+    maxRetryCount: payload.maxRetryCount,
+    createdAt,
+    updatedAt: createdAt,
+  })
+
+  const nextStore = {
+    ...store,
+    reminderRules: [rule, ...(store.reminderRules || [])],
+  }
+
+  const synced = syncInstancesForDate(nextStore, getTodayDateKey())
+  setStore(synced.nextStore)
+
+  return rule
+}
+
+export function updateReminderRule(ruleId, payload) {
+  const store = getStore()
+
+  const reminderRules = (store.reminderRules || []).map((rule) =>
+    rule.id === ruleId
+      ? normalizeReminderRule({
+          ...rule,
+          ...payload,
+          id: rule.id,
+          updatedAt: nowIso(),
+        })
+      : rule
+  )
+
+  const synced = syncInstancesForDate({ ...store, reminderRules }, getTodayDateKey())
+  setStore(synced.nextStore)
+}
+
+export function toggleReminderRule(ruleId, enabled) {
+  updateReminderRule(ruleId, { enabled })
+}
+
+export function deleteReminderRule(ruleId) {
+  const store = getStore()
+
+  const deletedInstanceIds = new Set(
+    (store.reminderInstances || [])
+      .filter((instance) => instance.ruleId === ruleId)
+      .map((instance) => instance.id)
+  )
+
+  setStore({
+    ...store,
+    reminderRules: (store.reminderRules || []).filter((rule) => rule.id !== ruleId),
+    reminderInstances: (store.reminderInstances || []).filter((instance) => instance.ruleId !== ruleId),
+    intakeLogs: (store.intakeLogs || []).filter((log) => !deletedInstanceIds.has(log.reminderInstanceId)),
+    reminderQueue: (store.reminderQueue || []).filter((id) => !deletedInstanceIds.has(id)),
+  })
+}
+
+export function processReminderCycle() {
+  const currentStore = ensureTodayReminderInstances()
+  const todayKey = getTodayDateKey()
+  const now = new Date()
+  const nowValue = now.toISOString()
+
+  const queueSet = new Set(currentStore.reminderQueue || [])
+  const notifiedItems = []
+  const missedInstances = []
+
+  let changed = false
+
+  const reminderInstances = (currentStore.reminderInstances || []).map((rawInstance) => {
+    if (!(rawInstance.scheduledAt || '').startsWith(todayKey)) return rawInstance
+
+    const instance = normalizeReminderInstance(rawInstance)
+    const rule = (currentStore.reminderRules || []).find((item) => item.id === instance.ruleId)
+
+    if (!rule || !rule.enabled) {
+      if (instance.visibleStatus === 'pending') {
+        changed = true
+        queueSet.delete(instance.id)
+
+        return {
+          ...instance,
+          visibleStatus: 'off',
+          status: 'off',
+          reminderStatus: 'off',
+          internalStatus: 'expired',
+          currentTriggerAt: instance.scheduledAt,
+        }
+      }
+
+      queueSet.delete(instance.id)
+      return instance
+    }
+
+    if (instance.visibleStatus !== 'pending') {
+      queueSet.delete(instance.id)
+      return instance
+    }
+
+    if (instance.internalStatus === 'ringing') {
+      queueSet.add(instance.id)
+      return instance
+    }
+
+    const dueAt = new Date(instance.currentTriggerAt || instance.scheduledAt)
+    if (now < dueAt) {
+      queueSet.delete(instance.id)
+      return instance
+    }
+
+    if (instance.retryCount >= rule.maxRetryCount) {
+      const next = {
+        ...instance,
+        visibleStatus: 'missed',
+        status: 'missed',
+        reminderStatus: 'missed',
+        internalStatus: 'expired',
+        completedAt: nowValue,
+      }
+
+      changed = true
+      queueSet.delete(instance.id)
+      missedInstances.push(next)
+      return next
+    }
+
+    const ringing = {
+      ...instance,
+      internalStatus: 'ringing',
+      lastNotifiedAt: nowValue,
+      notifiedAt: nowValue,
+      reminderStatus: 'pending',
+      status: 'pending',
+    }
+
+    queueSet.add(instance.id)
+    changed = true
+
+    const medication = (currentStore.medications || []).find((item) => item.id === instance.medicationId)
+
+    notifiedItems.push({
+      instanceId: instance.id,
+      medId: instance.medicationId,
+      drugName: medication?.drugName || '药品',
+    })
+
+    return ringing
+  })
+
+  if (!changed) {
+    return {
+      store: currentStore,
+      notifiedItems,
+      changed: false,
+    }
+  }
+
+  let nextStore = {
+    ...currentStore,
+    reminderInstances,
+    reminderQueue: Array.from(queueSet),
+  }
+
+  missedInstances.forEach((instance) => {
+    nextStore = upsertFinalLogForInstance(nextStore, instance)
+  })
+
+  setStore(nextStore)
+
+  return {
+    store: nextStore,
+    notifiedItems,
+    changed: true,
+  }
+}
+
+export function triggerReminderNow(reminderId) {
+  const store = getStore()
+  const queueSet = new Set(store.reminderQueue || [])
+  const nowValue = nowIso()
+
+  const { changed, nextStore } = withInstanceUpdate(store, reminderId, (instance) => ({
+    ...instance,
+    visibleStatus: 'pending',
+    status: 'pending',
+    reminderStatus: 'pending',
+    internalStatus: 'ringing',
+    currentTriggerAt: nowValue,
+    lastNotifiedAt: nowValue,
+    notifiedAt: nowValue,
+  }))
+
+  if (!changed) return
+
+  queueSet.add(reminderId)
+  setStore({
+    ...nextStore,
+    reminderQueue: Array.from(queueSet),
+  })
+}
+
+export function postponeReminderBeforeRing(reminderId, minutes = 5) {
+  const store = getStore()
+
+  const target = (store.reminderInstances || []).find((instance) => instance.id === reminderId)
+  if (!target) return false
+
+  if (target.visibleStatus !== 'pending') return false
+  if (target.internalStatus === 'ringing') return false
+
+  const base = new Date(target.currentTriggerAt || target.scheduledAt)
+  const nextTriggerAt = new Date(base.getTime() + Number(minutes || 5) * 60 * 1000).toISOString()
+
+  const { changed, nextStore } = withInstanceUpdate(store, reminderId, (instance) => ({
+    ...instance,
+    currentTriggerAt: nextTriggerAt,
+    internalStatus: 'waiting',
+    snoozeUntil: '',
+    visibleStatus: 'pending',
+    status: 'pending',
+    reminderStatus: 'pending',
+  }))
+
+  if (!changed) return false
+
+  setStore(nextStore)
+  return true
+}
+
+export function markReminderTaken(reminderId) {
+  const store = getStore()
+  const queueSet = new Set(store.reminderQueue || [])
+  const completedAt = nowIso()
+
+  const { changed, updated, nextStore } = withInstanceUpdate(store, reminderId, (instance) => ({
+    ...instance,
+    visibleStatus: 'taken',
+    status: 'taken',
+    reminderStatus: 'taken',
+    internalStatus: 'completed',
+    completedAt,
+    takenAt: completedAt,
+  }))
+
+  if (!changed || !updated) return
+
+  queueSet.delete(reminderId)
+  let mergedStore = {
+    ...nextStore,
+    reminderQueue: Array.from(queueSet),
+  }
+
+  mergedStore = upsertFinalLogForInstance(mergedStore, updated)
+  setStore(mergedStore)
+}
+
+export function skipReminder(reminderId) {
+  const store = getStore()
+  const queueSet = new Set(store.reminderQueue || [])
+  const completedAt = nowIso()
+
+  const { changed, updated, nextStore } = withInstanceUpdate(store, reminderId, (instance) => ({
+    ...instance,
+    visibleStatus: 'skipped',
+    status: 'skipped',
+    reminderStatus: 'skipped',
+    internalStatus: 'completed',
+    completedAt,
+  }))
+
+  if (!changed || !updated) return
+
+  queueSet.delete(reminderId)
+  let mergedStore = {
+    ...nextStore,
+    reminderQueue: Array.from(queueSet),
+  }
+
+  mergedStore = upsertFinalLogForInstance(mergedStore, updated)
+  setStore(mergedStore)
+}
+
+export function markReminderMissed(reminderId) {
+  const store = getStore()
+  const queueSet = new Set(store.reminderQueue || [])
+  const completedAt = nowIso()
+
+  const { changed, updated, nextStore } = withInstanceUpdate(store, reminderId, (instance) => ({
+    ...instance,
+    visibleStatus: 'missed',
+    status: 'missed',
+    reminderStatus: 'missed',
+    internalStatus: 'expired',
+    completedAt,
+  }))
+
+  if (!changed || !updated) return
+
+  queueSet.delete(reminderId)
+  let mergedStore = {
+    ...nextStore,
+    reminderQueue: Array.from(queueSet),
+  }
+
+  mergedStore = upsertFinalLogForInstance(mergedStore, updated)
+  setStore(mergedStore)
+}
+
+export function snoozeReminder(reminderId, minutes) {
+  const store = getStore()
+  const queueSet = new Set(store.reminderQueue || [])
+
+  const target = (store.reminderInstances || []).find((instance) => instance.id === reminderId)
+  if (!target) return
+
+  const rule = (store.reminderRules || []).find((item) => item.id === target.ruleId)
+  const delayMinutes = Number(minutes || rule?.retryIntervalMinutes || 5)
+
+  const nextRetryCount = toNonNegativeInt(target.retryCount, 0) + 1
+  const nextTriggerAt = new Date(Date.now() + delayMinutes * 60 * 1000).toISOString()
+
+  const { changed, nextStore } = withInstanceUpdate(store, reminderId, (instance) => ({
+    ...instance,
+    retryCount: nextRetryCount,
+    internalStatus: 'retrying',
+    currentTriggerAt: nextTriggerAt,
+    snoozeUntil: nextTriggerAt,
+    visibleStatus: 'pending',
+    status: 'pending',
+    reminderStatus: 'pending',
+  }))
+
+  if (!changed) return
+
+  queueSet.delete(reminderId)
+  setStore({
+    ...nextStore,
+    reminderQueue: Array.from(queueSet),
+  })
+}
+
+export function markAllTodayTaken() {
+  const store = ensureTodayReminderInstances()
+  const todayKey = getTodayDateKey()
+  const queueSet = new Set(store.reminderQueue || [])
+  const completedAt = nowIso()
+
+  let changed = false
+  let nextStore = { ...store }
+
+  const reminderInstances = (store.reminderInstances || []).map((instance) => {
+    if (!(instance.scheduledAt || '').startsWith(todayKey)) return instance
+    if (instance.visibleStatus !== 'pending') return instance
+
+    changed = true
+    queueSet.delete(instance.id)
+
+    const next = {
+      ...instance,
+      visibleStatus: 'taken',
+      status: 'taken',
+      reminderStatus: 'taken',
+      internalStatus: 'completed',
+      completedAt,
+      takenAt: completedAt,
+    }
+
+    nextStore = upsertFinalLogForInstance(nextStore, next)
+    return next
+  })
+
+  if (!changed) return
+
+  setStore({
+    ...nextStore,
+    reminderInstances,
+    reminderQueue: Array.from(queueSet),
+  })
+}
+
+export function upsertIntakeLog(payload) {
+  const store = getStore()
+
+  const nextLog = normalizeIntakeLog(payload)
+  const existingIndex = (store.intakeLogs || []).findIndex((item) => item.id === nextLog.id)
+
+  const intakeLogs = [...(store.intakeLogs || [])]
+  if (existingIndex >= 0) {
+    intakeLogs[existingIndex] = nextLog
+  } else {
+    intakeLogs.unshift(nextLog)
+  }
+
+  setStore({
+    ...store,
+    intakeLogs,
+  })
+}
+
+export function updateMedicationStock(medicationId, addQty) {
+  const store = getStore()
+
+  const medications = (store.medications || []).map((medication) =>
+    medication.id === medicationId
+      ? {
+          ...medication,
+          stockQty: Number(medication.stockQty || 0) + Number(addQty || 0),
+        }
+      : medication
+  )
+
+  setStore({
+    ...store,
+    medications,
+  })
+}
+
+export function updateUserProfile(payload) {
+  const store = getStore()
+
+  const userProfile = normalizeUserProfile({
+    ...(store.userProfile || {}),
+    ...payload,
+  })
+
+  setStore({
+    ...store,
+    userProfile,
+  })
 }
 
 function buildDefenseDemoStore() {
-  const today = new Date();
-  const todayKey = toDateKey(today);
-  const dayKeys = Array.from({ length: 7 }).map((_, index) =>
-    toDateKey(addDays(today, -6 + index))
-  );
+  const now = new Date()
+  const todayKey = toDateKey(now)
+  const dayKeys = Array.from({ length: 7 }).map((_, index) => toDateKey(addDays(now, -6 + index)))
 
   const medications = [
-    {
+    normalizeMedication({
       id: 'med-1',
       drugName: '缬沙坦片',
       spec: '80mg*14片',
       dose: 1,
       unit: '片',
-      frequencyPerDay: 1,
-      times: ['08:00'],
       withMeal: '饭后',
-      startDate: dayKeys[0],
-      endDate: '',
       stockQty: 4,
       stockUnit: '片',
-    },
-    {
+      startDate: dayKeys[0],
+      endDate: '',
+      sourceLabel: '处方导入',
+    }),
+    normalizeMedication({
       id: 'med-2',
-      drugName: '盐酸二甲双胍片',
+      drugName: '二甲双胍片',
       spec: '500mg*60片',
       dose: 1,
       unit: '片',
-      frequencyPerDay: 2,
-      times: ['08:00', '20:00'],
       withMeal: '饭中',
+      stockQty: 88,
+      stockUnit: '片',
       startDate: dayKeys[0],
       endDate: '',
-      stockQty: 72,
-      stockUnit: '片',
-    },
-    {
+      sourceLabel: '处方导入',
+    }),
+    normalizeMedication({
       id: 'med-3',
       drugName: '阿托伐他汀钙片',
       spec: '20mg*7片',
       dose: 1,
       unit: '片',
-      frequencyPerDay: 1,
-      times: ['21:00'],
       withMeal: '睡前',
+      stockQty: 18,
+      stockUnit: '片',
       startDate: dayKeys[0],
       endDate: '',
-      stockQty: 11,
-      stockUnit: '片',
-    },
-  ];
+      sourceLabel: '手动录入',
+    }),
+  ]
 
-  const missedKeys = new Set([`${dayKeys[2]}|med-1|08:00`, `${dayKeys[4]}|med-2|20:00`]);
-  const adverseEventKey = `${dayKeys[5]}|med-3|21:00`;
+  const reminderRules = [
+    normalizeReminderRule({
+      id: 'rule-1',
+      medicationId: 'med-1',
+      time: '08:00',
+      enabled: true,
+      repeatDays: DEFAULT_REPEAT_DAYS,
+      retryIntervalMinutes: 5,
+      maxRetryCount: 3,
+    }),
+    normalizeReminderRule({
+      id: 'rule-2',
+      medicationId: 'med-2',
+      time: '08:00',
+      enabled: true,
+      repeatDays: DEFAULT_REPEAT_DAYS,
+      retryIntervalMinutes: 10,
+      maxRetryCount: 3,
+    }),
+    normalizeReminderRule({
+      id: 'rule-3',
+      medicationId: 'med-2',
+      time: '20:00',
+      enabled: true,
+      repeatDays: DEFAULT_REPEAT_DAYS,
+      retryIntervalMinutes: 10,
+      maxRetryCount: 3,
+    }),
+    normalizeReminderRule({
+      id: 'rule-4',
+      medicationId: 'med-3',
+      time: '21:00',
+      enabled: true,
+      repeatDays: DEFAULT_REPEAT_DAYS,
+      retryIntervalMinutes: 15,
+      maxRetryCount: 5,
+    }),
+  ]
 
-  let logCounter = 1;
-  const intakeLogs = [];
+  const missedKeys = new Set([
+    `${dayKeys[2]}|rule-1`,
+    `${dayKeys[4]}|rule-3`,
+  ])
 
-  dayKeys.forEach((dayKey) => {
-    medications.forEach((medication) => {
-      medication.times.forEach((time) => {
-        const key = `${dayKey}|${medication.id}|${time}`;
-        const isMissed = missedKeys.has(key);
+  const intakeLogs = []
+  const reminderInstances = []
 
-        let status = isMissed ? 'missed' : 'taken';
-        if (
-          dayKey === todayKey
-          && !isMissed
-          && medication.id !== 'med-1'
-          && (time === '20:00' || time === '21:00')
-        ) {
-          status = 'scheduled';
+  let seq = 1
+
+  reminderRules.forEach((rule) => {
+    dayKeys.forEach((dateKey) => {
+      const scheduledAt = toDateTime(dateKey, rule.time)
+      const key = `${dateKey}|${rule.id}`
+
+      let visibleStatus = 'taken'
+      let internalStatus = 'completed'
+      let currentTriggerAt = scheduledAt
+      let completedAt = scheduledAt
+
+      if (missedKeys.has(key)) {
+        visibleStatus = 'missed'
+        internalStatus = 'expired'
+        completedAt = scheduledAt
+      }
+
+      if (dateKey === todayKey) {
+        if (rule.id === 'rule-1') {
+          visibleStatus = 'taken'
+          internalStatus = 'completed'
+          completedAt = toDateTime(todayKey, '08:03')
+        } else if (rule.id === 'rule-2') {
+          visibleStatus = 'pending'
+          internalStatus = 'waiting'
+          currentTriggerAt = new Date(Date.now() + 3 * 60 * 1000).toISOString()
+          completedAt = ''
+        } else if (rule.id === 'rule-3') {
+          visibleStatus = 'pending'
+          internalStatus = 'waiting'
+          currentTriggerAt = new Date(Date.now() + 25 * 60 * 1000).toISOString()
+          completedAt = ''
+        } else if (rule.id === 'rule-4') {
+          visibleStatus = 'skipped'
+          internalStatus = 'completed'
+          completedAt = new Date(Date.now() - 30 * 60 * 1000).toISOString()
         }
+      }
 
-        intakeLogs.push({
-          id: `log-demo-${logCounter}`,
-          medId: medication.id,
-          scheduledAt: `${dayKey}T${time}`,
-          status,
-          reminderStatus: status,
-          notifiedAt: '',
-          snoozeUntil: '',
-          takenAt: status === 'taken' ? `${dayKey}T${time}` : '',
-          reason: key === adverseEventKey ? '轻微头晕，已自行缓解' : '',
-        });
+      const instance = normalizeReminderInstance({
+        id: `demo-instance-${seq}`,
+        ruleId: rule.id,
+        medicationId: rule.medicationId,
+        scheduledAt,
+        currentTriggerAt,
+        retryCount: 0,
+        internalStatus,
+        visibleStatus,
+        completedAt,
+        lastNotifiedAt: '',
+      })
 
-        logCounter += 1;
-      });
-    });
-  });
+      reminderInstances.push(instance)
 
-  return {
+      if (FINAL_VISIBLE_STATUS_SET.has(visibleStatus)) {
+        intakeLogs.push(
+          normalizeIntakeLog({
+            id: `demo-log-${seq}`,
+            medicationId: rule.medicationId,
+            medId: rule.medicationId,
+            reminderInstanceId: instance.id,
+            scheduledAt,
+            takenAt: visibleStatus === 'taken' ? completedAt : '',
+            status: visibleStatus,
+            reason: visibleStatus === 'missed' && key === `${dayKeys[4]}|rule-3`
+              ? '晚间外出，未及时服药'
+              : '',
+          })
+        )
+      }
+
+      seq += 1
+    })
+  })
+
+  return normalizeStoreSchema({
     medications,
+    reminderRules,
+    reminderInstances,
     intakeLogs,
     reminderQueue: [],
     userProfile: {
@@ -179,7 +1468,7 @@ function buildDefenseDemoStore() {
       gender: '男',
       diseases: ['高血压', '2型糖尿病'],
       diagnosisDate: '2018-03-12',
-      note: '近3个月血压和空腹血糖波动，需规律复诊。',
+      note: '近3个月血压与空腹血糖波动，需规律复诊。',
     },
     adverseEvents: [
       {
@@ -193,520 +1482,26 @@ function buildDefenseDemoStore() {
     ],
     demoMeta: {
       mode: 'defense',
-      generatedAt: new Date().toISOString(),
+      generatedAt: nowIso(),
       label: '答辩演示数据',
     },
-  };
-}
-
-function addTodayReminderLogsToStore(store, dateKey = toDateKey(new Date())) {
-  let created = 0;
-  let sequence = 0;
-
-  const existingSet = new Set(
-    (store.intakeLogs || [])
-      .filter((log) => (log.scheduledAt || '').startsWith(dateKey))
-      .map((log) => `${log.medId}|${log.scheduledAt}`)
-  );
-
-  const nextLogs = [...(store.intakeLogs || [])];
-
-  (store.medications || []).forEach((medication) => {
-    if (!isMedActiveOnDate(medication, dateKey)) return;
-
-    (medication.times || []).forEach((time) => {
-      const scheduledAt = `${dateKey}T${time}`;
-      const key = `${medication.id}|${scheduledAt}`;
-
-      if (existingSet.has(key)) return;
-
-      sequence += 1;
-      created += 1;
-
-      nextLogs.push({
-        id: `log-auto-${Date.now()}-${sequence}`,
-        medId: medication.id,
-        scheduledAt,
-        status: 'scheduled',
-        reminderStatus: 'scheduled',
-        notifiedAt: '',
-        snoozeUntil: '',
-        takenAt: '',
-        reason: '',
-      });
-    });
-  });
-
-  if (created === 0) {
-    return { nextStore: store, changed: false };
-  }
-
-  return {
-    nextStore: {
-      ...store,
-      intakeLogs: nextLogs.sort(compareBySchedule),
-    },
-    changed: true,
-  };
-}
-
-function findMedicationById(store, medId) {
-  return (store.medications || []).find((medication) => medication.id === medId) || null;
-}
-
-function setQueueWithSet(store, queueSet) {
-  return {
-    ...store,
-    reminderQueue: Array.from(queueSet),
-  };
-}
-
-function updateSingleReminder(store, reminderId, updater) {
-  let changed = false;
-  let updatedLog = null;
-
-  const intakeLogs = (store.intakeLogs || []).map((log) => {
-    if (log.id !== reminderId) return log;
-
-    const nextLog = normalizeLog(updater(log));
-    if (JSON.stringify(nextLog) !== JSON.stringify(log)) changed = true;
-    updatedLog = nextLog;
-    return nextLog;
-  });
-
-  return {
-    changed,
-    updatedLog,
-    nextStore: changed
-      ? {
-          ...store,
-          intakeLogs,
-        }
-      : store,
-  };
-}
-
-export function subscribeStoreUpdates(callback) {
-  if (typeof window === 'undefined') return () => {};
-
-  window.addEventListener(STORE_UPDATED_EVENT, callback);
-  return () => window.removeEventListener(STORE_UPDATED_EVENT, callback);
-}
-
-export function initStore() {
-  const existing = window.localStorage.getItem(STORAGE_KEY);
-  if (!existing) {
-    const seeded = normalizeStoreSchema(mockStore);
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(seeded));
-  }
-}
-
-export function getStore() {
-  const raw = window.localStorage.getItem(STORAGE_KEY);
-  if (!raw) {
-    initStore();
-    return normalizeStoreSchema(clone(mockStore));
-  }
-
-  try {
-    const parsed = JSON.parse(raw);
-    const normalized = normalizeStoreSchema(parsed);
-
-    const parsedText = JSON.stringify(parsed);
-    const normalizedText = JSON.stringify(normalized);
-
-    if (parsedText !== normalizedText) {
-      window.localStorage.setItem(STORAGE_KEY, normalizedText);
-    }
-
-    return normalized;
-  } catch (error) {
-    const fallback = normalizeStoreSchema(clone(mockStore));
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(fallback));
-    return fallback;
-  }
-}
-
-export function setStore(nextStore) {
-  const normalized = normalizeStoreSchema(nextStore);
-  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(normalized));
-  emitStoreUpdated();
-}
-
-export function getTodayDateKey() {
-  return toDateKey(new Date());
-}
-
-export function ensureTodayReminderLogs(dateKey = getTodayDateKey()) {
-  const store = getStore();
-  const { nextStore, changed } = addTodayReminderLogsToStore(store, dateKey);
-
-  if (changed) {
-    setStore(nextStore);
-    return nextStore;
-  }
-
-  return store;
-}
-
-export function getMedications() {
-  return getStore().medications || [];
-}
-
-export function getIntakeLogs() {
-  return getStore().intakeLogs || [];
-}
-
-export function getTodayReminderItemsFromStore(store, dateKey = getTodayDateKey()) {
-  const medicationMap = new Map((store.medications || []).map((medication) => [medication.id, medication]));
-
-  return (store.intakeLogs || [])
-    .filter((log) => (log.scheduledAt || '').startsWith(dateKey))
-    .map((log) => ({
-      ...normalizeLog(log),
-      medication: medicationMap.get(log.medId) || null,
-      dueAt: log.status === 'snoozed' && log.snoozeUntil ? log.snoozeUntil : log.scheduledAt,
-    }))
-    .sort(compareBySchedule);
-}
-
-export function getTodayReminderItems(dateKey = getTodayDateKey()) {
-  const store = ensureTodayReminderLogs(dateKey);
-  return getTodayReminderItemsFromStore(store, dateKey);
-}
-
-export function getReminderQueueItems() {
-  const store = getStore();
-  const queueSet = new Set(store.reminderQueue || []);
-  const medicationMap = new Map((store.medications || []).map((medication) => [medication.id, medication]));
-
-  return (store.intakeLogs || [])
-    .filter((log) => queueSet.has(log.id))
-    .map((log) => ({
-      ...normalizeLog(log),
-      medication: medicationMap.get(log.medId) || null,
-    }))
-    .sort(compareBySchedule);
-}
-
-export function addMedication(payload) {
-  const store = getStore();
-  const medication = {
-    id: `med-${Date.now()}`,
-    ...payload,
-  };
-
-  const nextStore = {
-    ...store,
-    medications: [medication, ...store.medications],
-  };
-
-  setStore(nextStore);
-  return medication;
-}
-
-export function deleteMedication(medicationId) {
-  const store = getStore();
-  const queueSet = new Set(store.reminderQueue || []);
-
-  const removedLogIds = store.intakeLogs
-    .filter((item) => item.medId === medicationId)
-    .map((item) => item.id);
-
-  removedLogIds.forEach((id) => {
-    queueSet.delete(id);
-  });
-
-  const remainedLogs = store.intakeLogs.filter((item) => item.medId !== medicationId);
-
-  const nextStore = {
-    ...store,
-    medications: store.medications.filter((item) => item.id !== medicationId),
-    intakeLogs: remainedLogs,
-    reminderQueue: Array.from(queueSet),
-  };
-
-  setStore(nextStore);
-}
-
-export function upsertIntakeLog(payload) {
-  const store = getStore();
-  const normalizedStatus = normalizeReminderStatus(payload.status || payload.reminderStatus);
-  const queueSet = new Set(store.reminderQueue || []);
-
-  const existingIndex = store.intakeLogs.findIndex(
-    (item) => item.medId === payload.medId && item.scheduledAt === payload.scheduledAt
-  );
-
-  const nextLogs = [...store.intakeLogs];
-  const normalizedPayload = normalizeLog({
-    ...payload,
-    status: normalizedStatus,
-    reminderStatus: normalizedStatus,
-  });
-
-  if (existingIndex === -1) {
-    const id = `log-${Date.now()}`;
-    nextLogs.push({ id, ...normalizedPayload });
-    if (normalizedStatus === 'notified') queueSet.add(id);
-  } else {
-    const prev = nextLogs[existingIndex];
-    const nextLog = {
-      ...prev,
-      ...normalizedPayload,
-      status: normalizedStatus,
-      reminderStatus: normalizedStatus,
-    };
-
-    nextLogs[existingIndex] = nextLog;
-
-    if (normalizedStatus === 'notified') {
-      queueSet.add(nextLog.id);
-    } else if (FINAL_REMINDER_STATUS_SET.has(normalizedStatus) || normalizedStatus === 'snoozed') {
-      queueSet.delete(nextLog.id);
-    }
-  }
-
-  const nextStore = {
-    ...store,
-    intakeLogs: nextLogs,
-    reminderQueue: Array.from(queueSet),
-  };
-
-  setStore(nextStore);
-}
-
-export function processReminderCycle() {
-  const withTodayLogs = ensureTodayReminderLogs();
-  const now = new Date();
-  const nowIso = now.toISOString();
-  const todayKey = getTodayDateKey();
-
-  let changed = false;
-  const queueSet = new Set(withTodayLogs.reminderQueue || []);
-  const notifiedItems = [];
-
-  const nextLogs = (withTodayLogs.intakeLogs || []).map((log) => {
-    if (!(log.scheduledAt || '').startsWith(todayKey)) return log;
-
-    const current = normalizeLog(log);
-    let next = current;
-
-    const dueAtIso = current.status === 'snoozed' && current.snoozeUntil
-      ? current.snoozeUntil
-      : current.scheduledAt;
-
-    const dueAt = new Date(dueAtIso);
-
-    if ((current.status === 'scheduled' || current.status === 'snoozed') && now >= dueAt) {
-      next = {
-        ...next,
-        status: 'notified',
-        reminderStatus: 'notified',
-        notifiedAt: nowIso,
-        snoozeUntil: '',
-      };
-
-      queueSet.add(next.id);
-      changed = true;
-
-      const medication = findMedicationById(withTodayLogs, next.medId);
-      notifiedItems.push({
-        logId: next.id,
-        medId: next.medId,
-        drugName: medication?.drugName || '药品',
-      });
-    }
-
-    const overdueBaseIso = next.status === 'snoozed' && next.snoozeUntil
-      ? next.snoozeUntil
-      : next.scheduledAt;
-    const overdueMs = now.getTime() - new Date(overdueBaseIso).getTime();
-
-    if (
-      (next.status === 'scheduled' || next.status === 'notified' || next.status === 'snoozed')
-      && overdueMs >= MISSED_THRESHOLD_MS
-    ) {
-      next = {
-        ...next,
-        status: 'missed',
-        reminderStatus: 'missed',
-        snoozeUntil: '',
-      };
-
-      queueSet.delete(next.id);
-      changed = true;
-    }
-
-    return next;
-  });
-
-  if (!changed) {
-    return {
-      store: withTodayLogs,
-      notifiedItems,
-      changed: false,
-    };
-  }
-
-  const nextStore = {
-    ...withTodayLogs,
-    intakeLogs: nextLogs,
-    reminderQueue: Array.from(queueSet),
-  };
-
-  setStore(nextStore);
-
-  return {
-    store: nextStore,
-    notifiedItems,
-    changed: true,
-  };
-}
-
-export function triggerReminderNow(reminderId) {
-  const store = getStore();
-  const queueSet = new Set(store.reminderQueue || []);
-  const nowIso = new Date().toISOString();
-
-  const { changed, nextStore } = updateSingleReminder(store, reminderId, (log) => ({
-    ...log,
-    status: 'notified',
-    reminderStatus: 'notified',
-    notifiedAt: nowIso,
-    snoozeUntil: '',
-  }));
-
-  if (!changed) return;
-
-  queueSet.add(reminderId);
-  setStore(setQueueWithSet(nextStore, queueSet));
-}
-
-export function markReminderTaken(reminderId) {
-  const store = getStore();
-  const queueSet = new Set(store.reminderQueue || []);
-  const nowIso = new Date().toISOString();
-
-  const { changed, nextStore } = updateSingleReminder(store, reminderId, (log) => ({
-    ...log,
-    status: 'taken',
-    reminderStatus: 'taken',
-    takenAt: nowIso,
-    snoozeUntil: '',
-  }));
-
-  if (!changed) return;
-
-  queueSet.delete(reminderId);
-  setStore(setQueueWithSet(nextStore, queueSet));
-}
-
-export function snoozeReminder(reminderId, minutes = 5) {
-  const store = getStore();
-  const queueSet = new Set(store.reminderQueue || []);
-  const snoozeUntil = new Date(Date.now() + minutes * 60 * 1000).toISOString();
-  const nowIso = new Date().toISOString();
-
-  const { changed, nextStore } = updateSingleReminder(store, reminderId, (log) => ({
-    ...log,
-    status: 'snoozed',
-    reminderStatus: 'snoozed',
-    snoozeUntil,
-    notifiedAt: log.notifiedAt || nowIso,
-  }));
-
-  if (!changed) return;
-
-  queueSet.delete(reminderId);
-  setStore(setQueueWithSet(nextStore, queueSet));
-}
-
-export function skipReminder(reminderId) {
-  const store = getStore();
-  const queueSet = new Set(store.reminderQueue || []);
-
-  const { changed, nextStore } = updateSingleReminder(store, reminderId, (log) => ({
-    ...log,
-    status: 'skipped',
-    reminderStatus: 'skipped',
-    snoozeUntil: '',
-  }));
-
-  if (!changed) return;
-
-  queueSet.delete(reminderId);
-  setStore(setQueueWithSet(nextStore, queueSet));
-}
-
-export function markAllTodayTaken() {
-  const store = ensureTodayReminderLogs();
-  const todayKey = getTodayDateKey();
-  const nowIso = new Date().toISOString();
-
-  let changed = false;
-  const queueSet = new Set(store.reminderQueue || []);
-
-  const nextLogs = (store.intakeLogs || []).map((log) => {
-    if (!(log.scheduledAt || '').startsWith(todayKey)) return log;
-
-    const normalized = normalizeLog(log);
-    if (FINAL_REMINDER_STATUS_SET.has(normalized.status)) return normalized;
-
-    changed = true;
-    queueSet.delete(normalized.id);
-
-    return {
-      ...normalized,
-      status: 'taken',
-      reminderStatus: 'taken',
-      takenAt: nowIso,
-      snoozeUntil: '',
-    };
-  });
-
-  if (!changed) return;
-
-  setStore({
-    ...store,
-    intakeLogs: nextLogs,
-    reminderQueue: Array.from(queueSet),
-  });
+  })
 }
 
 export function clearStoreForDemo() {
-  window.localStorage.removeItem(STORAGE_KEY);
-  initStore();
-  emitStoreUpdated();
+  window.localStorage.removeItem(STORAGE_KEY)
+  initStore()
+  emitStoreUpdated()
 }
 
 export function generateDefenseDemoData() {
-  const demoStore = normalizeStoreSchema(buildDefenseDemoStore());
-  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(demoStore));
-  emitStoreUpdated();
+  const store = buildDefenseDemoStore()
+  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(store))
+  emitStoreUpdated()
 }
 
 export function restoreReminderDemoData() {
-  generateDefenseDemoData();
-  ensureTodayReminderLogs();
-  processReminderCycle();
-}
-
-export function updateMedicationStock(medicationId, addQty) {
-  const store = getStore();
-  const medications = store.medications.map((medication) =>
-    medication.id === medicationId
-      ? {
-          ...medication,
-          stockQty: Number(medication.stockQty || 0) + Number(addQty || 0),
-        }
-      : medication
-  );
-
-  const nextStore = {
-    ...store,
-    medications,
-  };
-
-  setStore(nextStore);
+  generateDefenseDemoData()
+  ensureTodayReminderInstances()
+  processReminderCycle()
 }

@@ -1,0 +1,3792 @@
+# 阶段交付：提醒系统产品逻辑重构
+
+## 1. 本次重构思路说明
+- 将提醒从旧的 intakeLogs 任务模型拆分为 Medication / ReminderRule / ReminderInstance / IntakeLog 四层。
+- 用药计划页只保留药品属性管理；提醒页专注闹钟规则管理与今日状态管理。
+- 将 snoozed/retrying/ringing 等内部状态从用户可见层剥离，用户只看到 off/pending/taken/missed/skipped。
+- 提醒弹窗改为真实闹钟交互：已服药 / 稍后提醒 / 跳过。
+- 通过 normalize+migration 兼容旧 schema（旧 medications.times + intakeLogs 状态可自动迁移到新结构）。
+- AI复诊、7日趋势、医生报告、购药预警改为从新结构读取，不破坏既有能力。
+
+## 2. 修改文件列表
+- src/utils/storage.js
+- src/utils/insights.js
+- src/data/mock.js
+- src/hooks/useReminderEngine.js
+- src/components/ReminderModal.jsx
+- src/pages/PlanPage.jsx
+- src/pages/RemindersPage.jsx
+- src/pages/HomePage.jsx
+- src/pages/ProfilePage.jsx
+- src/pages/ConsultPage.jsx
+- src/pages/PurchasePage.jsx
+
+## 3. 新增文件列表
+- 无
+
+## 4. 完整代码
+
+### 文件：src/utils/storage.js
+```js
+import { mockStore } from '../data/mock'
+
+const STORAGE_KEY = 'housekeeper-med-app-v1'
+export const STORE_UPDATED_EVENT = 'housekeeper-store-updated'
+
+export const VISIBLE_REMINDER_STATUSES = ['off', 'pending', 'taken', 'missed', 'skipped']
+export const INTERNAL_REMINDER_STATUSES = ['waiting', 'ringing', 'snoozed', 'retrying', 'completed', 'expired']
+
+const FINAL_VISIBLE_STATUS_SET = new Set(['taken', 'missed', 'skipped'])
+const DEFAULT_REPEAT_DAYS = [0, 1, 2, 3, 4, 5, 6]
+
+const clone = (obj) => JSON.parse(JSON.stringify(obj))
+
+function toDateKey(date) {
+  return date.toISOString().slice(0, 10)
+}
+
+function toDateTime(dateKey, time) {
+  return `${dateKey}T${time}`
+}
+
+function addDays(date, days) {
+  const next = new Date(date)
+  next.setDate(next.getDate() + days)
+  return next
+}
+
+function toTime(iso) {
+  if (!iso || !iso.includes('T')) return '08:00'
+  return iso.slice(11, 16)
+}
+
+function toInt(value, fallback = 0) {
+  const next = Number(value)
+  if (Number.isNaN(next)) return fallback
+  return Math.round(next)
+}
+
+function toPositiveInt(value, fallback = 1) {
+  const resolved = toInt(value, fallback)
+  return resolved > 0 ? resolved : fallback
+}
+
+function toNonNegativeInt(value, fallback = 0) {
+  const resolved = toInt(value, fallback)
+  return resolved >= 0 ? resolved : fallback
+}
+
+function nowIso() {
+  return new Date().toISOString()
+}
+
+function getDefaultUserProfile() {
+  return {
+    name: '张先生',
+    age: 58,
+    gender: '男',
+    diseases: ['高血压', '2型糖尿病'],
+    diagnosisDate: '2018-03-12',
+    note: '请按时服药并按期复诊。',
+  }
+}
+
+function emitStoreUpdated() {
+  if (typeof window === 'undefined') return
+  window.dispatchEvent(new CustomEvent(STORE_UPDATED_EVENT))
+}
+
+function isMedicationActiveOnDate(medication, dateKey) {
+  const startOk = !medication.startDate || medication.startDate <= dateKey
+  const endOk = !medication.endDate || medication.endDate >= dateKey
+  return startOk && endOk
+}
+
+function isRuleEnabledOnDate(rule, dateKey) {
+  const day = new Date(`${dateKey}T00:00:00`).getDay()
+  const repeatDays = Array.isArray(rule.repeatDays) && rule.repeatDays.length > 0
+    ? rule.repeatDays
+    : DEFAULT_REPEAT_DAYS
+
+  return repeatDays.includes(day)
+}
+
+function isVisibleStatus(status) {
+  return VISIBLE_REMINDER_STATUSES.includes(status)
+}
+
+function isInternalStatus(status) {
+  return INTERNAL_REMINDER_STATUSES.includes(status)
+}
+
+function normalizeVisibleStatus(status) {
+  if (status === 'scheduled' || status === 'notified' || status === 'snoozed') return 'pending'
+  if (status === 'disabled' || status === 'closed') return 'off'
+  if (isVisibleStatus(status)) return status
+  return 'pending'
+}
+
+function normalizeInternalStatus(status, visibleStatus) {
+  if (isInternalStatus(status)) return status
+
+  if (status === 'scheduled') return 'waiting'
+  if (status === 'notified') return 'ringing'
+  if (status === 'snoozed') return 'snoozed'
+
+  if (visibleStatus === 'taken' || visibleStatus === 'skipped') return 'completed'
+  if (visibleStatus === 'missed' || visibleStatus === 'off') return 'expired'
+  return 'waiting'
+}
+
+function normalizeMedication(medication = {}, index = 0) {
+  return {
+    id: medication.id || `med-${Date.now()}-${index}`,
+    drugName: medication.drugName || '未命名药品',
+    spec: medication.spec || '',
+    dose: Number(medication.dose || 1),
+    unit: medication.unit || '片',
+    withMeal: medication.withMeal || '按医嘱',
+    stockQty: Number(medication.stockQty || 0),
+    stockUnit: medication.stockUnit || '片',
+    startDate: medication.startDate || toDateKey(new Date()),
+    endDate: medication.endDate || '',
+    sourceLabel: medication.sourceLabel || medication.source || '手动录入',
+    frequencyPerDay: toPositiveInt(medication.frequencyPerDay, 1),
+    times: Array.isArray(medication.times)
+      ? medication.times
+      : typeof medication.times === 'string'
+        ? medication.times.split(',').map((item) => item.trim()).filter(Boolean)
+        : [],
+  }
+}
+
+function normalizeReminderRule(rule = {}, index = 0) {
+  const repeatDays = Array.isArray(rule.repeatDays) && rule.repeatDays.length > 0
+    ? rule.repeatDays.map((day) => toNonNegativeInt(day, 0)).filter((day) => day >= 0 && day <= 6)
+    : DEFAULT_REPEAT_DAYS
+
+  const createdAt = rule.createdAt || nowIso()
+
+  return {
+    id: rule.id || `rule-${Date.now()}-${index}`,
+    medicationId: rule.medicationId || rule.medId || '',
+    time: rule.time || '08:00',
+    enabled: typeof rule.enabled === 'boolean' ? rule.enabled : true,
+    repeatDays,
+    retryIntervalMinutes: toPositiveInt(rule.retryIntervalMinutes, 5),
+    maxRetryCount: toNonNegativeInt(rule.maxRetryCount, 3),
+    createdAt,
+    updatedAt: rule.updatedAt || createdAt,
+  }
+}
+
+function normalizeReminderInstance(instance = {}, index = 0) {
+  const visibleStatus = normalizeVisibleStatus(
+    instance.visibleStatus || instance.reminderStatus || instance.status || 'pending'
+  )
+
+  const scheduledAt = instance.scheduledAt || toDateTime(toDateKey(new Date()), '08:00')
+  const currentTriggerAt = instance.currentTriggerAt || instance.snoozeUntil || scheduledAt
+
+  return {
+    id: instance.id || `instance-${Date.now()}-${index}`,
+    ruleId: instance.ruleId || '',
+    medicationId: instance.medicationId || instance.medId || '',
+    scheduledAt,
+    currentTriggerAt,
+    retryCount: toNonNegativeInt(instance.retryCount, 0),
+    internalStatus: normalizeInternalStatus(instance.internalStatus || instance.status, visibleStatus),
+    visibleStatus,
+    lastNotifiedAt: instance.lastNotifiedAt || instance.notifiedAt || '',
+    notifiedAt: instance.notifiedAt || instance.lastNotifiedAt || '',
+    completedAt: instance.completedAt || instance.takenAt || '',
+    reminderStatus: visibleStatus,
+    status: visibleStatus,
+    snoozeUntil: instance.snoozeUntil || '',
+    takenAt: instance.takenAt || '',
+  }
+}
+
+function normalizeIntakeLog(log = {}, index = 0) {
+  const status = normalizeVisibleStatus(log.status || log.reminderStatus || 'pending')
+
+  return {
+    id: log.id || `log-${Date.now()}-${index}`,
+    medicationId: log.medicationId || log.medId || '',
+    medId: log.medicationId || log.medId || '',
+    reminderInstanceId: log.reminderInstanceId || '',
+    scheduledAt: log.scheduledAt || toDateTime(toDateKey(new Date()), '08:00'),
+    takenAt: log.takenAt || '',
+    status,
+    reason: log.reason || '',
+    reminderStatus: status,
+  }
+}
+
+function normalizeUserProfile(profile = {}) {
+  const fallback = getDefaultUserProfile()
+  const diseases = Array.isArray(profile.diseases)
+    ? profile.diseases
+    : typeof profile.diseases === 'string'
+      ? profile.diseases.split(/[,，]/).map((item) => item.trim()).filter(Boolean)
+      : fallback.diseases
+
+  return {
+    name: profile.name || fallback.name,
+    age: toPositiveInt(profile.age, fallback.age),
+    gender: profile.gender || fallback.gender,
+    diseases,
+    diagnosisDate: profile.diagnosisDate || fallback.diagnosisDate,
+    note: profile.note || fallback.note,
+  }
+}
+
+function buildLegacyRulesFromMedications(medications) {
+  const rules = []
+
+  medications.forEach((medication, medIndex) => {
+    const legacyTimes = Array.isArray(medication.times) && medication.times.length > 0
+      ? medication.times
+      : ['08:00']
+
+    legacyTimes.forEach((time, timeIndex) => {
+      rules.push(
+        normalizeReminderRule({
+          id: `rule-legacy-${medication.id}-${timeIndex}`,
+          medicationId: medication.id,
+          time,
+          enabled: true,
+          repeatDays: DEFAULT_REPEAT_DAYS,
+          retryIntervalMinutes: 5,
+          maxRetryCount: 3,
+          createdAt: medication.createdAt || nowIso(),
+          updatedAt: medication.updatedAt || nowIso(),
+        }, `${medIndex}-${timeIndex}`)
+      )
+    })
+  })
+
+  return rules
+}
+
+function ensureRuleForLegacyLog(reminderRules, log) {
+  const medId = log.medicationId || log.medId || ''
+  const time = toTime(log.scheduledAt)
+  const key = `${medId}|${time}`
+
+  const existing = reminderRules.find((rule) => `${rule.medicationId}|${rule.time}` === key)
+  if (existing) return existing
+
+  const rule = normalizeReminderRule({
+    id: `rule-migrate-${medId}-${time}`,
+    medicationId: medId,
+    time,
+    enabled: true,
+    repeatDays: DEFAULT_REPEAT_DAYS,
+    retryIntervalMinutes: 5,
+    maxRetryCount: 3,
+  })
+
+  reminderRules.push(rule)
+  return rule
+}
+
+function mapLegacyLogToInstance(log, rule, index) {
+  const visibleStatus = normalizeVisibleStatus(log.status || log.reminderStatus || 'pending')
+
+  return normalizeReminderInstance({
+    id: `instance-migrate-${index}`,
+    ruleId: rule.id,
+    medicationId: log.medicationId || log.medId || '',
+    scheduledAt: log.scheduledAt,
+    currentTriggerAt: log.snoozeUntil || log.scheduledAt,
+    retryCount: toNonNegativeInt(log.retryCount, log.status === 'snoozed' ? 1 : 0),
+    internalStatus: normalizeInternalStatus(log.status, visibleStatus),
+    visibleStatus,
+    lastNotifiedAt: log.notifiedAt || '',
+    completedAt: visibleStatus === 'taken' ? log.takenAt || '' : '',
+    takenAt: log.takenAt || '',
+    reason: log.reason || '',
+  })
+}
+
+function upsertFinalLogForInstance(store, instance, reason = '') {
+  if (!FINAL_VISIBLE_STATUS_SET.has(instance.visibleStatus)) return store
+
+  const existingIndex = (store.intakeLogs || []).findIndex(
+    (log) => log.reminderInstanceId === instance.id
+  )
+
+  const nextLog = normalizeIntakeLog({
+    id: existingIndex >= 0 ? store.intakeLogs[existingIndex].id : `log-${Date.now()}-${instance.id}`,
+    medicationId: instance.medicationId,
+    medId: instance.medicationId,
+    reminderInstanceId: instance.id,
+    scheduledAt: instance.scheduledAt,
+    takenAt: instance.visibleStatus === 'taken' ? (instance.completedAt || nowIso()) : '',
+    status: instance.visibleStatus,
+    reason,
+  })
+
+  if (existingIndex >= 0) {
+    const nextLogs = [...store.intakeLogs]
+    nextLogs[existingIndex] = nextLog
+    return { ...store, intakeLogs: nextLogs }
+  }
+
+  return {
+    ...store,
+    intakeLogs: [nextLog, ...(store.intakeLogs || [])],
+  }
+}
+
+function normalizeStoreSchema(rawStore = {}) {
+  const base = rawStore || {}
+
+  const medications = Array.isArray(base.medications)
+    ? base.medications.map((item, index) => normalizeMedication(item, index))
+    : []
+
+  let reminderRules = Array.isArray(base.reminderRules)
+    ? base.reminderRules.map((item, index) => normalizeReminderRule(item, index))
+    : []
+
+  if (reminderRules.length === 0) {
+    reminderRules = buildLegacyRulesFromMedications(medications)
+  }
+
+  let reminderInstances = Array.isArray(base.reminderInstances)
+    ? base.reminderInstances.map((item, index) => normalizeReminderInstance(item, index))
+    : []
+
+  const legacyLogs = Array.isArray(base.intakeLogs)
+    ? base.intakeLogs.map((item, index) => normalizeIntakeLog(item, index))
+    : []
+
+  if (reminderInstances.length === 0 && legacyLogs.length > 0) {
+    reminderInstances = legacyLogs.map((log, index) => {
+      const rule = ensureRuleForLegacyLog(reminderRules, log)
+      return mapLegacyLogToInstance(log, rule, index)
+    })
+  }
+
+  reminderInstances = reminderInstances.map((instance) => {
+    if (instance.ruleId) return instance
+
+    const rule = reminderRules.find(
+      (item) => item.medicationId === instance.medicationId && item.time === toTime(instance.scheduledAt)
+    )
+
+    if (rule) {
+      return {
+        ...instance,
+        ruleId: rule.id,
+      }
+    }
+
+    const fallbackRule = normalizeReminderRule({
+      id: `rule-auto-${instance.medicationId}-${toTime(instance.scheduledAt)}`,
+      medicationId: instance.medicationId,
+      time: toTime(instance.scheduledAt),
+      enabled: true,
+      repeatDays: DEFAULT_REPEAT_DAYS,
+      retryIntervalMinutes: 5,
+      maxRetryCount: 3,
+    })
+
+    reminderRules.push(fallbackRule)
+
+    return {
+      ...instance,
+      ruleId: fallbackRule.id,
+    }
+  })
+
+  let intakeLogs = legacyLogs
+
+  reminderInstances.forEach((instance) => {
+    if (!FINAL_VISIBLE_STATUS_SET.has(instance.visibleStatus)) return
+
+    if (intakeLogs.some((log) => log.reminderInstanceId === instance.id)) return
+
+    intakeLogs = [
+      normalizeIntakeLog({
+        id: `log-instance-${instance.id}`,
+        medicationId: instance.medicationId,
+        medId: instance.medicationId,
+        reminderInstanceId: instance.id,
+        scheduledAt: instance.scheduledAt,
+        takenAt: instance.visibleStatus === 'taken' ? (instance.completedAt || instance.takenAt || '') : '',
+        status: instance.visibleStatus,
+        reason: '',
+      }),
+      ...intakeLogs,
+    ]
+  })
+
+  const normalizedQueue = Array.isArray(base.reminderQueue)
+    ? base.reminderQueue.filter((id) => reminderInstances.some((instance) => instance.id === id))
+    : reminderInstances
+      .filter((instance) => instance.internalStatus === 'ringing' && instance.visibleStatus === 'pending')
+      .map((instance) => instance.id)
+
+  const userProfile = normalizeUserProfile(base.userProfile || {})
+
+  return {
+    ...base,
+    schemaVersion: 2,
+    medications,
+    reminderRules,
+    reminderInstances,
+    intakeLogs,
+    reminderQueue: normalizedQueue,
+    userProfile,
+    adverseEvents: Array.isArray(base.adverseEvents) ? base.adverseEvents : [],
+    demoMeta: base.demoMeta || {
+      mode: 'default',
+      generatedAt: '',
+      label: '基础数据',
+    },
+  }
+}
+
+function compareIso(a, b) {
+  if (a === b) return 0
+  return a > b ? 1 : -1
+}
+
+function syncInstancesForDate(store, dateKey = toDateKey(new Date())) {
+  let changed = false
+  let nextInstances = [...(store.reminderInstances || [])]
+  const queueSet = new Set(store.reminderQueue || [])
+
+  ;(store.reminderRules || []).forEach((rule) => {
+    const medication = (store.medications || []).find((item) => item.id === rule.medicationId)
+    if (!medication) return
+    if (!isMedicationActiveOnDate(medication, dateKey)) return
+    if (!isRuleEnabledOnDate(rule, dateKey)) return
+
+    const scheduledAt = toDateTime(dateKey, rule.time)
+
+    nextInstances = nextInstances.filter((instance) => {
+      if (
+        instance.ruleId === rule.id
+        && (instance.scheduledAt || '').startsWith(dateKey)
+        && instance.scheduledAt !== scheduledAt
+        && !FINAL_VISIBLE_STATUS_SET.has(instance.visibleStatus)
+      ) {
+        queueSet.delete(instance.id)
+        changed = true
+        return false
+      }
+
+      return true
+    })
+
+    const targetIndex = nextInstances.findIndex(
+      (instance) => instance.ruleId === rule.id && instance.scheduledAt === scheduledAt
+    )
+
+    if (targetIndex === -1) {
+      const nextInstance = normalizeReminderInstance({
+        id: `instance-${Date.now()}-${rule.id}`,
+        ruleId: rule.id,
+        medicationId: medication.id,
+        scheduledAt,
+        currentTriggerAt: scheduledAt,
+        retryCount: 0,
+        internalStatus: rule.enabled ? 'waiting' : 'expired',
+        visibleStatus: rule.enabled ? 'pending' : 'off',
+        lastNotifiedAt: '',
+        completedAt: '',
+      })
+
+      nextInstances.push(nextInstance)
+      changed = true
+      return
+    }
+
+    const current = normalizeReminderInstance(nextInstances[targetIndex])
+    if (FINAL_VISIBLE_STATUS_SET.has(current.visibleStatus)) {
+      nextInstances[targetIndex] = {
+        ...current,
+        medicationId: medication.id,
+        ruleId: rule.id,
+      }
+      return
+    }
+
+    let next = {
+      ...current,
+      medicationId: medication.id,
+      ruleId: rule.id,
+    }
+
+    if (!rule.enabled && current.visibleStatus !== 'off') {
+      next = {
+        ...next,
+        visibleStatus: 'off',
+        status: 'off',
+        reminderStatus: 'off',
+        internalStatus: 'expired',
+        currentTriggerAt: scheduledAt,
+      }
+
+      queueSet.delete(next.id)
+      changed = true
+    }
+
+    if (rule.enabled && current.visibleStatus === 'off') {
+      next = {
+        ...next,
+        visibleStatus: 'pending',
+        status: 'pending',
+        reminderStatus: 'pending',
+        internalStatus: 'waiting',
+        currentTriggerAt: compareIso(current.currentTriggerAt || scheduledAt, scheduledAt) < 0
+          ? scheduledAt
+          : current.currentTriggerAt || scheduledAt,
+      }
+
+      changed = true
+    }
+
+    nextInstances[targetIndex] = next
+  })
+
+  if (!changed) {
+    return {
+      changed: false,
+      nextStore: store,
+    }
+  }
+
+  return {
+    changed: true,
+    nextStore: {
+      ...store,
+      reminderInstances: nextInstances,
+      reminderQueue: Array.from(queueSet),
+    },
+  }
+}
+
+function getTodayDateKeyInner() {
+  return toDateKey(new Date())
+}
+
+function getTodayInstancesFromStore(store, dateKey = getTodayDateKeyInner()) {
+  return (store.reminderInstances || [])
+    .filter((item) => (item.scheduledAt || '').startsWith(dateKey))
+    .sort((a, b) => compareIso(a.scheduledAt, b.scheduledAt))
+}
+
+function withInstanceUpdate(store, instanceId, updater) {
+  let changed = false
+  let updated = null
+
+  const reminderInstances = (store.reminderInstances || []).map((instance) => {
+    if (instance.id !== instanceId) return instance
+
+    const next = normalizeReminderInstance(updater(instance))
+    changed = true
+    updated = next
+    return next
+  })
+
+  return {
+    changed,
+    updated,
+    nextStore: changed
+      ? {
+          ...store,
+          reminderInstances,
+        }
+      : store,
+  }
+}
+
+function enrichInstance(store, instance) {
+  const medication = (store.medications || []).find((item) => item.id === instance.medicationId) || null
+  const rule = (store.reminderRules || []).find((item) => item.id === instance.ruleId) || null
+
+  return {
+    ...instance,
+    medication,
+    rule,
+    dueAt: instance.currentTriggerAt || instance.scheduledAt,
+    status: instance.visibleStatus,
+  }
+}
+
+export function subscribeStoreUpdates(callback) {
+  if (typeof window === 'undefined') return () => {}
+
+  window.addEventListener(STORE_UPDATED_EVENT, callback)
+  return () => window.removeEventListener(STORE_UPDATED_EVENT, callback)
+}
+
+export function initStore() {
+  const existing = window.localStorage.getItem(STORAGE_KEY)
+  if (existing) return
+
+  const seeded = normalizeStoreSchema(mockStore)
+  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(seeded))
+}
+
+export function getStore() {
+  const raw = window.localStorage.getItem(STORAGE_KEY)
+
+  if (!raw) {
+    initStore()
+    return normalizeStoreSchema(clone(mockStore))
+  }
+
+  try {
+    const parsed = JSON.parse(raw)
+    const normalized = normalizeStoreSchema(parsed)
+
+    if (JSON.stringify(parsed) !== JSON.stringify(normalized)) {
+      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(normalized))
+    }
+
+    return normalized
+  } catch (error) {
+    const fallback = normalizeStoreSchema(clone(mockStore))
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(fallback))
+    return fallback
+  }
+}
+
+export function setStore(nextStore) {
+  const normalized = normalizeStoreSchema(nextStore)
+  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(normalized))
+  emitStoreUpdated()
+}
+
+export function getTodayDateKey() {
+  return getTodayDateKeyInner()
+}
+
+export function ensureTodayReminderInstances(dateKey = getTodayDateKey()) {
+  const store = getStore()
+  const { changed, nextStore } = syncInstancesForDate(store, dateKey)
+
+  if (changed) {
+    setStore(nextStore)
+    return nextStore
+  }
+
+  return store
+}
+
+export function ensureTodayReminderLogs(dateKey = getTodayDateKey()) {
+  return ensureTodayReminderInstances(dateKey)
+}
+
+export function getMedications() {
+  return getStore().medications || []
+}
+
+export function getIntakeLogs() {
+  return getStore().intakeLogs || []
+}
+
+export function getTodayReminderItemsFromStore(store, dateKey = getTodayDateKey()) {
+  const { nextStore } = syncInstancesForDate(store, dateKey)
+  const ruleList = nextStore.reminderRules || []
+  const medList = nextStore.medications || []
+  const instanceList = getTodayInstancesFromStore(nextStore, dateKey)
+
+  const rows = []
+
+  ruleList.forEach((rule) => {
+    const medication = medList.find((item) => item.id === rule.medicationId)
+    if (!medication) return
+    if (!isMedicationActiveOnDate(medication, dateKey)) return
+    if (!isRuleEnabledOnDate(rule, dateKey)) return
+
+    const scheduledAt = toDateTime(dateKey, rule.time)
+
+    const instance = instanceList.find(
+      (item) => item.ruleId === rule.id && item.scheduledAt === scheduledAt
+    ) || normalizeReminderInstance({
+      id: `virtual-${rule.id}-${dateKey}`,
+      ruleId: rule.id,
+      medicationId: rule.medicationId,
+      scheduledAt,
+      currentTriggerAt: scheduledAt,
+      retryCount: 0,
+      internalStatus: rule.enabled ? 'waiting' : 'expired',
+      visibleStatus: rule.enabled ? 'pending' : 'off',
+    })
+
+    const visibleStatus = rule.enabled ? instance.visibleStatus : 'off'
+
+    rows.push({
+      ...instance,
+      id: instance.id,
+      ruleId: rule.id,
+      medicationId: medication.id,
+      scheduledAt,
+      dueAt: visibleStatus === 'pending' ? (instance.currentTriggerAt || scheduledAt) : '',
+      status: visibleStatus,
+      visibleStatus,
+      internalStatus: instance.internalStatus,
+      medication,
+      rule,
+    })
+  })
+
+  return rows.sort((a, b) => compareIso(a.scheduledAt, b.scheduledAt))
+}
+
+export function getTodayReminderItems(dateKey = getTodayDateKey()) {
+  const store = ensureTodayReminderInstances(dateKey)
+  return getTodayReminderItemsFromStore(store, dateKey)
+}
+
+export function getReminderRulesWithToday(dateKey = getTodayDateKey()) {
+  const store = ensureTodayReminderInstances(dateKey)
+  const todayItems = getTodayReminderItemsFromStore(store, dateKey)
+
+  return (store.reminderRules || [])
+    .map((rule) => {
+      const medication = (store.medications || []).find((item) => item.id === rule.medicationId) || null
+      const todayItem = todayItems.find((item) => item.ruleId === rule.id) || null
+
+      let nextTriggerAt = ''
+      if (!rule.enabled) {
+        nextTriggerAt = ''
+      } else if (todayItem && todayItem.visibleStatus === 'pending') {
+        nextTriggerAt = todayItem.dueAt || todayItem.scheduledAt
+      } else {
+        for (let i = 1; i <= 14; i += 1) {
+          const day = addDays(new Date(`${dateKey}T00:00:00`), i)
+          const dayKey = toDateKey(day)
+          if (!isRuleEnabledOnDate(rule, dayKey)) continue
+          if (!medication || !isMedicationActiveOnDate(medication, dayKey)) continue
+          nextTriggerAt = toDateTime(dayKey, rule.time)
+          break
+        }
+      }
+
+      return {
+        ...rule,
+        medication,
+        todayItem,
+        todayStatus: !rule.enabled
+          ? 'off'
+          : todayItem
+            ? todayItem.visibleStatus
+            : 'pending',
+        nextTriggerAt,
+      }
+    })
+    .filter((item) => item.medication)
+    .sort((a, b) => compareIso(a.time, b.time))
+}
+
+export function getReminderQueueItems() {
+  const store = getStore()
+  const queueSet = new Set(store.reminderQueue || [])
+
+  return (store.reminderInstances || [])
+    .filter((instance) => queueSet.has(instance.id))
+    .filter((instance) => instance.visibleStatus === 'pending' && instance.internalStatus === 'ringing')
+    .map((instance) => {
+      const enriched = enrichInstance(store, instance)
+      const maxRetryCount = enriched.rule?.maxRetryCount ?? 3
+
+      return {
+        ...enriched,
+        attemptNo: instance.retryCount + 1,
+        remainingRetryCount: Math.max(maxRetryCount - instance.retryCount, 0),
+      }
+    })
+    .sort((a, b) => compareIso(a.currentTriggerAt, b.currentTriggerAt))
+}
+
+export function addMedication(payload) {
+  const store = getStore()
+
+  const medication = normalizeMedication({
+    id: `med-${Date.now()}`,
+    ...payload,
+  })
+
+  setStore({
+    ...store,
+    medications: [medication, ...(store.medications || [])],
+  })
+
+  return medication
+}
+
+export function updateMedication(medicationId, payload) {
+  const store = getStore()
+
+  const medications = (store.medications || []).map((medication) =>
+    medication.id === medicationId
+      ? normalizeMedication({
+          ...medication,
+          ...payload,
+          id: medication.id,
+        })
+      : medication
+  )
+
+  setStore({
+    ...store,
+    medications,
+  })
+}
+
+export function deleteMedication(medicationId) {
+  const store = getStore()
+
+  const deletedRuleIds = new Set(
+    (store.reminderRules || [])
+      .filter((rule) => rule.medicationId === medicationId)
+      .map((rule) => rule.id)
+  )
+
+  const deletedInstanceIds = new Set(
+    (store.reminderInstances || [])
+      .filter((instance) => instance.medicationId === medicationId || deletedRuleIds.has(instance.ruleId))
+      .map((instance) => instance.id)
+  )
+
+  const nextStore = {
+    ...store,
+    medications: (store.medications || []).filter((item) => item.id !== medicationId),
+    reminderRules: (store.reminderRules || []).filter((rule) => !deletedRuleIds.has(rule.id)),
+    reminderInstances: (store.reminderInstances || []).filter((instance) => !deletedInstanceIds.has(instance.id)),
+    intakeLogs: (store.intakeLogs || []).filter(
+      (log) => log.medicationId !== medicationId && !deletedInstanceIds.has(log.reminderInstanceId)
+    ),
+    reminderQueue: (store.reminderQueue || []).filter((id) => !deletedInstanceIds.has(id)),
+  }
+
+  setStore(nextStore)
+}
+
+export function addReminderRule(payload) {
+  const store = getStore()
+
+  const medication = (store.medications || []).find((item) => item.id === payload.medicationId)
+  if (!medication) return null
+
+  const createdAt = nowIso()
+
+  const rule = normalizeReminderRule({
+    id: `rule-${Date.now()}`,
+    medicationId: payload.medicationId,
+    time: payload.time,
+    enabled: payload.enabled,
+    repeatDays: payload.repeatDays,
+    retryIntervalMinutes: payload.retryIntervalMinutes,
+    maxRetryCount: payload.maxRetryCount,
+    createdAt,
+    updatedAt: createdAt,
+  })
+
+  const nextStore = {
+    ...store,
+    reminderRules: [rule, ...(store.reminderRules || [])],
+  }
+
+  const synced = syncInstancesForDate(nextStore, getTodayDateKey())
+  setStore(synced.nextStore)
+
+  return rule
+}
+
+export function updateReminderRule(ruleId, payload) {
+  const store = getStore()
+
+  const reminderRules = (store.reminderRules || []).map((rule) =>
+    rule.id === ruleId
+      ? normalizeReminderRule({
+          ...rule,
+          ...payload,
+          id: rule.id,
+          updatedAt: nowIso(),
+        })
+      : rule
+  )
+
+  const synced = syncInstancesForDate({ ...store, reminderRules }, getTodayDateKey())
+  setStore(synced.nextStore)
+}
+
+export function toggleReminderRule(ruleId, enabled) {
+  updateReminderRule(ruleId, { enabled })
+}
+
+export function deleteReminderRule(ruleId) {
+  const store = getStore()
+
+  const deletedInstanceIds = new Set(
+    (store.reminderInstances || [])
+      .filter((instance) => instance.ruleId === ruleId)
+      .map((instance) => instance.id)
+  )
+
+  setStore({
+    ...store,
+    reminderRules: (store.reminderRules || []).filter((rule) => rule.id !== ruleId),
+    reminderInstances: (store.reminderInstances || []).filter((instance) => instance.ruleId !== ruleId),
+    intakeLogs: (store.intakeLogs || []).filter((log) => !deletedInstanceIds.has(log.reminderInstanceId)),
+    reminderQueue: (store.reminderQueue || []).filter((id) => !deletedInstanceIds.has(id)),
+  })
+}
+
+export function processReminderCycle() {
+  const currentStore = ensureTodayReminderInstances()
+  const todayKey = getTodayDateKey()
+  const now = new Date()
+  const nowValue = now.toISOString()
+
+  const queueSet = new Set(currentStore.reminderQueue || [])
+  const notifiedItems = []
+  const missedInstances = []
+
+  let changed = false
+
+  const reminderInstances = (currentStore.reminderInstances || []).map((rawInstance) => {
+    if (!(rawInstance.scheduledAt || '').startsWith(todayKey)) return rawInstance
+
+    const instance = normalizeReminderInstance(rawInstance)
+    const rule = (currentStore.reminderRules || []).find((item) => item.id === instance.ruleId)
+
+    if (!rule || !rule.enabled) {
+      if (instance.visibleStatus === 'pending') {
+        changed = true
+        queueSet.delete(instance.id)
+
+        return {
+          ...instance,
+          visibleStatus: 'off',
+          status: 'off',
+          reminderStatus: 'off',
+          internalStatus: 'expired',
+          currentTriggerAt: instance.scheduledAt,
+        }
+      }
+
+      queueSet.delete(instance.id)
+      return instance
+    }
+
+    if (instance.visibleStatus !== 'pending') {
+      queueSet.delete(instance.id)
+      return instance
+    }
+
+    if (instance.internalStatus === 'ringing') {
+      queueSet.add(instance.id)
+      return instance
+    }
+
+    const dueAt = new Date(instance.currentTriggerAt || instance.scheduledAt)
+    if (now < dueAt) {
+      queueSet.delete(instance.id)
+      return instance
+    }
+
+    if (instance.retryCount >= rule.maxRetryCount) {
+      const next = {
+        ...instance,
+        visibleStatus: 'missed',
+        status: 'missed',
+        reminderStatus: 'missed',
+        internalStatus: 'expired',
+        completedAt: nowValue,
+      }
+
+      changed = true
+      queueSet.delete(instance.id)
+      missedInstances.push(next)
+      return next
+    }
+
+    const ringing = {
+      ...instance,
+      internalStatus: 'ringing',
+      lastNotifiedAt: nowValue,
+      notifiedAt: nowValue,
+      reminderStatus: 'pending',
+      status: 'pending',
+    }
+
+    queueSet.add(instance.id)
+    changed = true
+
+    const medication = (currentStore.medications || []).find((item) => item.id === instance.medicationId)
+
+    notifiedItems.push({
+      instanceId: instance.id,
+      medId: instance.medicationId,
+      drugName: medication?.drugName || '药品',
+    })
+
+    return ringing
+  })
+
+  if (!changed) {
+    return {
+      store: currentStore,
+      notifiedItems,
+      changed: false,
+    }
+  }
+
+  let nextStore = {
+    ...currentStore,
+    reminderInstances,
+    reminderQueue: Array.from(queueSet),
+  }
+
+  missedInstances.forEach((instance) => {
+    nextStore = upsertFinalLogForInstance(nextStore, instance)
+  })
+
+  setStore(nextStore)
+
+  return {
+    store: nextStore,
+    notifiedItems,
+    changed: true,
+  }
+}
+
+export function triggerReminderNow(reminderId) {
+  const store = getStore()
+  const queueSet = new Set(store.reminderQueue || [])
+  const nowValue = nowIso()
+
+  const { changed, nextStore } = withInstanceUpdate(store, reminderId, (instance) => ({
+    ...instance,
+    visibleStatus: 'pending',
+    status: 'pending',
+    reminderStatus: 'pending',
+    internalStatus: 'ringing',
+    currentTriggerAt: nowValue,
+    lastNotifiedAt: nowValue,
+    notifiedAt: nowValue,
+  }))
+
+  if (!changed) return
+
+  queueSet.add(reminderId)
+  setStore({
+    ...nextStore,
+    reminderQueue: Array.from(queueSet),
+  })
+}
+
+export function postponeReminderBeforeRing(reminderId, minutes = 5) {
+  const store = getStore()
+
+  const target = (store.reminderInstances || []).find((instance) => instance.id === reminderId)
+  if (!target) return false
+
+  if (target.visibleStatus !== 'pending') return false
+  if (target.internalStatus === 'ringing') return false
+
+  const base = new Date(target.currentTriggerAt || target.scheduledAt)
+  const nextTriggerAt = new Date(base.getTime() + Number(minutes || 5) * 60 * 1000).toISOString()
+
+  const { changed, nextStore } = withInstanceUpdate(store, reminderId, (instance) => ({
+    ...instance,
+    currentTriggerAt: nextTriggerAt,
+    internalStatus: 'waiting',
+    snoozeUntil: '',
+    visibleStatus: 'pending',
+    status: 'pending',
+    reminderStatus: 'pending',
+  }))
+
+  if (!changed) return false
+
+  setStore(nextStore)
+  return true
+}
+
+export function markReminderTaken(reminderId) {
+  const store = getStore()
+  const queueSet = new Set(store.reminderQueue || [])
+  const completedAt = nowIso()
+
+  const { changed, updated, nextStore } = withInstanceUpdate(store, reminderId, (instance) => ({
+    ...instance,
+    visibleStatus: 'taken',
+    status: 'taken',
+    reminderStatus: 'taken',
+    internalStatus: 'completed',
+    completedAt,
+    takenAt: completedAt,
+  }))
+
+  if (!changed || !updated) return
+
+  queueSet.delete(reminderId)
+  let mergedStore = {
+    ...nextStore,
+    reminderQueue: Array.from(queueSet),
+  }
+
+  mergedStore = upsertFinalLogForInstance(mergedStore, updated)
+  setStore(mergedStore)
+}
+
+export function skipReminder(reminderId) {
+  const store = getStore()
+  const queueSet = new Set(store.reminderQueue || [])
+  const completedAt = nowIso()
+
+  const { changed, updated, nextStore } = withInstanceUpdate(store, reminderId, (instance) => ({
+    ...instance,
+    visibleStatus: 'skipped',
+    status: 'skipped',
+    reminderStatus: 'skipped',
+    internalStatus: 'completed',
+    completedAt,
+  }))
+
+  if (!changed || !updated) return
+
+  queueSet.delete(reminderId)
+  let mergedStore = {
+    ...nextStore,
+    reminderQueue: Array.from(queueSet),
+  }
+
+  mergedStore = upsertFinalLogForInstance(mergedStore, updated)
+  setStore(mergedStore)
+}
+
+export function markReminderMissed(reminderId) {
+  const store = getStore()
+  const queueSet = new Set(store.reminderQueue || [])
+  const completedAt = nowIso()
+
+  const { changed, updated, nextStore } = withInstanceUpdate(store, reminderId, (instance) => ({
+    ...instance,
+    visibleStatus: 'missed',
+    status: 'missed',
+    reminderStatus: 'missed',
+    internalStatus: 'expired',
+    completedAt,
+  }))
+
+  if (!changed || !updated) return
+
+  queueSet.delete(reminderId)
+  let mergedStore = {
+    ...nextStore,
+    reminderQueue: Array.from(queueSet),
+  }
+
+  mergedStore = upsertFinalLogForInstance(mergedStore, updated)
+  setStore(mergedStore)
+}
+
+export function snoozeReminder(reminderId, minutes) {
+  const store = getStore()
+  const queueSet = new Set(store.reminderQueue || [])
+
+  const target = (store.reminderInstances || []).find((instance) => instance.id === reminderId)
+  if (!target) return
+
+  const rule = (store.reminderRules || []).find((item) => item.id === target.ruleId)
+  const delayMinutes = Number(minutes || rule?.retryIntervalMinutes || 5)
+
+  const nextRetryCount = toNonNegativeInt(target.retryCount, 0) + 1
+  const nextTriggerAt = new Date(Date.now() + delayMinutes * 60 * 1000).toISOString()
+
+  const { changed, nextStore } = withInstanceUpdate(store, reminderId, (instance) => ({
+    ...instance,
+    retryCount: nextRetryCount,
+    internalStatus: 'retrying',
+    currentTriggerAt: nextTriggerAt,
+    snoozeUntil: nextTriggerAt,
+    visibleStatus: 'pending',
+    status: 'pending',
+    reminderStatus: 'pending',
+  }))
+
+  if (!changed) return
+
+  queueSet.delete(reminderId)
+  setStore({
+    ...nextStore,
+    reminderQueue: Array.from(queueSet),
+  })
+}
+
+export function markAllTodayTaken() {
+  const store = ensureTodayReminderInstances()
+  const todayKey = getTodayDateKey()
+  const queueSet = new Set(store.reminderQueue || [])
+  const completedAt = nowIso()
+
+  let changed = false
+  let nextStore = { ...store }
+
+  const reminderInstances = (store.reminderInstances || []).map((instance) => {
+    if (!(instance.scheduledAt || '').startsWith(todayKey)) return instance
+    if (instance.visibleStatus !== 'pending') return instance
+
+    changed = true
+    queueSet.delete(instance.id)
+
+    const next = {
+      ...instance,
+      visibleStatus: 'taken',
+      status: 'taken',
+      reminderStatus: 'taken',
+      internalStatus: 'completed',
+      completedAt,
+      takenAt: completedAt,
+    }
+
+    nextStore = upsertFinalLogForInstance(nextStore, next)
+    return next
+  })
+
+  if (!changed) return
+
+  setStore({
+    ...nextStore,
+    reminderInstances,
+    reminderQueue: Array.from(queueSet),
+  })
+}
+
+export function upsertIntakeLog(payload) {
+  const store = getStore()
+
+  const nextLog = normalizeIntakeLog(payload)
+  const existingIndex = (store.intakeLogs || []).findIndex((item) => item.id === nextLog.id)
+
+  const intakeLogs = [...(store.intakeLogs || [])]
+  if (existingIndex >= 0) {
+    intakeLogs[existingIndex] = nextLog
+  } else {
+    intakeLogs.unshift(nextLog)
+  }
+
+  setStore({
+    ...store,
+    intakeLogs,
+  })
+}
+
+export function updateMedicationStock(medicationId, addQty) {
+  const store = getStore()
+
+  const medications = (store.medications || []).map((medication) =>
+    medication.id === medicationId
+      ? {
+          ...medication,
+          stockQty: Number(medication.stockQty || 0) + Number(addQty || 0),
+        }
+      : medication
+  )
+
+  setStore({
+    ...store,
+    medications,
+  })
+}
+
+export function updateUserProfile(payload) {
+  const store = getStore()
+
+  const userProfile = normalizeUserProfile({
+    ...(store.userProfile || {}),
+    ...payload,
+  })
+
+  setStore({
+    ...store,
+    userProfile,
+  })
+}
+
+function buildDefenseDemoStore() {
+  const now = new Date()
+  const todayKey = toDateKey(now)
+  const dayKeys = Array.from({ length: 7 }).map((_, index) => toDateKey(addDays(now, -6 + index)))
+
+  const medications = [
+    normalizeMedication({
+      id: 'med-1',
+      drugName: '缬沙坦片',
+      spec: '80mg*14片',
+      dose: 1,
+      unit: '片',
+      withMeal: '饭后',
+      stockQty: 4,
+      stockUnit: '片',
+      startDate: dayKeys[0],
+      endDate: '',
+      sourceLabel: '处方导入',
+    }),
+    normalizeMedication({
+      id: 'med-2',
+      drugName: '二甲双胍片',
+      spec: '500mg*60片',
+      dose: 1,
+      unit: '片',
+      withMeal: '饭中',
+      stockQty: 88,
+      stockUnit: '片',
+      startDate: dayKeys[0],
+      endDate: '',
+      sourceLabel: '处方导入',
+    }),
+    normalizeMedication({
+      id: 'med-3',
+      drugName: '阿托伐他汀钙片',
+      spec: '20mg*7片',
+      dose: 1,
+      unit: '片',
+      withMeal: '睡前',
+      stockQty: 18,
+      stockUnit: '片',
+      startDate: dayKeys[0],
+      endDate: '',
+      sourceLabel: '手动录入',
+    }),
+  ]
+
+  const reminderRules = [
+    normalizeReminderRule({
+      id: 'rule-1',
+      medicationId: 'med-1',
+      time: '08:00',
+      enabled: true,
+      repeatDays: DEFAULT_REPEAT_DAYS,
+      retryIntervalMinutes: 5,
+      maxRetryCount: 3,
+    }),
+    normalizeReminderRule({
+      id: 'rule-2',
+      medicationId: 'med-2',
+      time: '08:00',
+      enabled: true,
+      repeatDays: DEFAULT_REPEAT_DAYS,
+      retryIntervalMinutes: 10,
+      maxRetryCount: 3,
+    }),
+    normalizeReminderRule({
+      id: 'rule-3',
+      medicationId: 'med-2',
+      time: '20:00',
+      enabled: true,
+      repeatDays: DEFAULT_REPEAT_DAYS,
+      retryIntervalMinutes: 10,
+      maxRetryCount: 3,
+    }),
+    normalizeReminderRule({
+      id: 'rule-4',
+      medicationId: 'med-3',
+      time: '21:00',
+      enabled: true,
+      repeatDays: DEFAULT_REPEAT_DAYS,
+      retryIntervalMinutes: 15,
+      maxRetryCount: 5,
+    }),
+  ]
+
+  const missedKeys = new Set([
+    `${dayKeys[2]}|rule-1`,
+    `${dayKeys[4]}|rule-3`,
+  ])
+
+  const intakeLogs = []
+  const reminderInstances = []
+
+  let seq = 1
+
+  reminderRules.forEach((rule) => {
+    dayKeys.forEach((dateKey) => {
+      const scheduledAt = toDateTime(dateKey, rule.time)
+      const key = `${dateKey}|${rule.id}`
+
+      let visibleStatus = 'taken'
+      let internalStatus = 'completed'
+      let currentTriggerAt = scheduledAt
+      let completedAt = scheduledAt
+
+      if (missedKeys.has(key)) {
+        visibleStatus = 'missed'
+        internalStatus = 'expired'
+        completedAt = scheduledAt
+      }
+
+      if (dateKey === todayKey) {
+        if (rule.id === 'rule-1') {
+          visibleStatus = 'taken'
+          internalStatus = 'completed'
+          completedAt = toDateTime(todayKey, '08:03')
+        } else if (rule.id === 'rule-2') {
+          visibleStatus = 'pending'
+          internalStatus = 'waiting'
+          currentTriggerAt = new Date(Date.now() + 3 * 60 * 1000).toISOString()
+          completedAt = ''
+        } else if (rule.id === 'rule-3') {
+          visibleStatus = 'pending'
+          internalStatus = 'waiting'
+          currentTriggerAt = new Date(Date.now() + 25 * 60 * 1000).toISOString()
+          completedAt = ''
+        } else if (rule.id === 'rule-4') {
+          visibleStatus = 'skipped'
+          internalStatus = 'completed'
+          completedAt = new Date(Date.now() - 30 * 60 * 1000).toISOString()
+        }
+      }
+
+      const instance = normalizeReminderInstance({
+        id: `demo-instance-${seq}`,
+        ruleId: rule.id,
+        medicationId: rule.medicationId,
+        scheduledAt,
+        currentTriggerAt,
+        retryCount: 0,
+        internalStatus,
+        visibleStatus,
+        completedAt,
+        lastNotifiedAt: '',
+      })
+
+      reminderInstances.push(instance)
+
+      if (FINAL_VISIBLE_STATUS_SET.has(visibleStatus)) {
+        intakeLogs.push(
+          normalizeIntakeLog({
+            id: `demo-log-${seq}`,
+            medicationId: rule.medicationId,
+            medId: rule.medicationId,
+            reminderInstanceId: instance.id,
+            scheduledAt,
+            takenAt: visibleStatus === 'taken' ? completedAt : '',
+            status: visibleStatus,
+            reason: visibleStatus === 'missed' && key === `${dayKeys[4]}|rule-3`
+              ? '晚间外出，未及时服药'
+              : '',
+          })
+        )
+      }
+
+      seq += 1
+    })
+  })
+
+  return normalizeStoreSchema({
+    medications,
+    reminderRules,
+    reminderInstances,
+    intakeLogs,
+    reminderQueue: [],
+    userProfile: {
+      name: '张先生',
+      age: 58,
+      gender: '男',
+      diseases: ['高血压', '2型糖尿病'],
+      diagnosisDate: '2018-03-12',
+      note: '近3个月血压与空腹血糖波动，需规律复诊。',
+    },
+    adverseEvents: [
+      {
+        id: 'ae-1',
+        medId: 'med-3',
+        eventTime: `${dayKeys[5]}T21:20`,
+        symptom: '轻微头晕，已自行缓解',
+        severity: 'mild',
+        note: '未影响次日活动。',
+      },
+    ],
+    demoMeta: {
+      mode: 'defense',
+      generatedAt: nowIso(),
+      label: '答辩演示数据',
+    },
+  })
+}
+
+export function clearStoreForDemo() {
+  window.localStorage.removeItem(STORAGE_KEY)
+  initStore()
+  emitStoreUpdated()
+}
+
+export function generateDefenseDemoData() {
+  const store = buildDefenseDemoStore()
+  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(store))
+  emitStoreUpdated()
+}
+
+export function restoreReminderDemoData() {
+  generateDefenseDemoData()
+  ensureTodayReminderInstances()
+  processReminderCycle()
+}
+
+```
+
+### 文件：src/utils/insights.js
+```js
+function toDateKey(date) {
+  return date.toISOString().slice(0, 10)
+}
+
+function toDateFromKey(key) {
+  return new Date(`${key}T00:00:00`)
+}
+
+function addDays(date, days) {
+  const next = new Date(date)
+  next.setDate(next.getDate() + days)
+  return next
+}
+
+function toMinutes(time) {
+  const [hour, minute] = (time || '00:00').split(':').map(Number)
+  return hour * 60 + minute
+}
+
+function formatMonthDay(dateKey) {
+  const date = toDateFromKey(dateKey)
+  const month = `${date.getMonth() + 1}`.padStart(2, '0')
+  const day = `${date.getDate()}`.padStart(2, '0')
+  return `${month}/${day}`
+}
+
+function getDefaultProfile() {
+  return {
+    name: '张先生',
+    age: 58,
+    gender: '男',
+    diseases: ['高血压', '2型糖尿病'],
+    diagnosisDate: '待补充',
+    note: '当前为基础 mock 数据。',
+  }
+}
+
+function isMedicationActiveOnDate(medication, dateKey) {
+  const startOk = !medication.startDate || medication.startDate <= dateKey
+  const endOk = !medication.endDate || medication.endDate >= dateKey
+  return startOk && endOk
+}
+
+function isRuleEnabledOnDate(rule, dateKey) {
+  const day = new Date(`${dateKey}T00:00:00`).getDay()
+  const repeatDays = Array.isArray(rule.repeatDays) && rule.repeatDays.length > 0
+    ? rule.repeatDays
+    : [0, 1, 2, 3, 4, 5, 6]
+
+  return repeatDays.includes(day)
+}
+
+function resolveContext(input, logsInput) {
+  if (input && typeof input === 'object' && Array.isArray(input.medications)) {
+    return {
+      medications: input.medications || [],
+      reminderRules: input.reminderRules || [],
+      reminderInstances: input.reminderInstances || [],
+      intakeLogs: input.intakeLogs || [],
+      adverseEvents: input.adverseEvents || [],
+      userProfile: input.userProfile || getDefaultProfile(),
+    }
+  }
+
+  return {
+    medications: Array.isArray(input) ? input : [],
+    reminderRules: [],
+    reminderInstances: [],
+    intakeLogs: Array.isArray(logsInput) ? logsInput : [],
+    adverseEvents: [],
+    userProfile: getDefaultProfile(),
+  }
+}
+
+function normalizeEventStatus(status) {
+  if (status === 'scheduled' || status === 'notified' || status === 'snoozed' || status === 'pending') return 'pending'
+  if (status === 'off' || status === 'closed') return 'off'
+  if (status === 'taken') return 'taken'
+  if (status === 'missed') return 'missed'
+  if (status === 'skipped') return 'skipped'
+  return 'pending'
+}
+
+function collectReminderEvents(context) {
+  const fromInstances = (context.reminderInstances || []).map((instance) => ({
+    medicationId: instance.medicationId || instance.medId || '',
+    reminderInstanceId: instance.id,
+    scheduledAt: instance.scheduledAt,
+    status: normalizeEventStatus(instance.visibleStatus || instance.status || instance.reminderStatus),
+    reason: '',
+  }))
+
+  const existingInstanceIdSet = new Set(fromInstances.map((item) => item.reminderInstanceId))
+
+  const fromLogs = (context.intakeLogs || []).map((log) => ({
+    medicationId: log.medicationId || log.medId || '',
+    reminderInstanceId: log.reminderInstanceId || '',
+    scheduledAt: log.scheduledAt,
+    status: normalizeEventStatus(log.status || log.reminderStatus),
+    reason: log.reason || '',
+  }))
+
+  const merged = [...fromInstances]
+
+  fromLogs.forEach((log) => {
+    if (log.reminderInstanceId && existingInstanceIdSet.has(log.reminderInstanceId)) {
+      const targetIndex = merged.findIndex((item) => item.reminderInstanceId === log.reminderInstanceId)
+      if (targetIndex >= 0) {
+        merged[targetIndex] = {
+          ...merged[targetIndex],
+          status: log.status,
+          reason: log.reason,
+        }
+      }
+      return
+    }
+
+    merged.push(log)
+  })
+
+  return merged.filter((item) => item.scheduledAt)
+}
+
+function expectedCountByRules(context, dateKey) {
+  const medications = context.medications || []
+
+  return (context.reminderRules || []).reduce((sum, rule) => {
+    if (!rule.enabled) return sum
+    const medication = medications.find((item) => item.id === rule.medicationId)
+    if (!medication) return sum
+    if (!isMedicationActiveOnDate(medication, dateKey)) return sum
+    if (!isRuleEnabledOnDate(rule, dateKey)) return sum
+    return sum + 1
+  }, 0)
+}
+
+function getWeekDateKeys() {
+  const endDate = new Date()
+  const startDate = addDays(endDate, -6)
+
+  return Array.from({ length: 7 }).map((_, index) => toDateKey(addDays(startDate, index)))
+}
+
+function getDailyStats(context, dateKey, events) {
+  const dayEvents = events.filter((item) => (item.scheduledAt || '').startsWith(dateKey))
+
+  const expectedFromEvents = dayEvents.filter((item) => item.status !== 'off').length
+  const expectedFromRules = expectedCountByRules(context, dateKey)
+  const expected = Math.max(expectedFromEvents, expectedFromRules)
+
+  const taken = dayEvents.filter((item) => item.status === 'taken').length
+  const missed = dayEvents.filter((item) => item.status === 'missed').length
+  const skipped = dayEvents.filter((item) => item.status === 'skipped').length
+  const pending = Math.max(0, expected - taken - missed - skipped)
+  const adherence = expected === 0 ? 100 : Math.round((taken / expected) * 100)
+
+  return {
+    dateKey,
+    expected,
+    taken,
+    missed,
+    skipped,
+    pending,
+    adherence,
+  }
+}
+
+function resolveMedicationFrequency(medication, rulesForMedication = []) {
+  if (rulesForMedication.length > 0) {
+    const dailyCount = rulesForMedication.reduce((sum, rule) => {
+      const repeatDays = Array.isArray(rule.repeatDays) && rule.repeatDays.length > 0
+        ? rule.repeatDays.length
+        : 7
+
+      return sum + repeatDays / 7
+    }, 0)
+
+    return dailyCount > 0 ? dailyCount : 1
+  }
+
+  if (Number(medication.frequencyPerDay) > 0) return Number(medication.frequencyPerDay)
+  if (Array.isArray(medication.times) && medication.times.length > 0) return medication.times.length
+  return 1
+}
+
+export function getGreeting() {
+  const hour = new Date().getHours()
+  if (hour < 6) return '凌晨好'
+  if (hour < 12) return '上午好'
+  if (hour < 18) return '下午好'
+  return '晚上好'
+}
+
+export function buildTodaySchedule(input, logsInput) {
+  const context = resolveContext(input, logsInput)
+  const todayKey = toDateKey(new Date())
+  const events = collectReminderEvents(context)
+
+  const rows = (context.reminderRules || []).map((rule) => {
+    const medication = (context.medications || []).find((item) => item.id === rule.medicationId)
+    if (!medication) return null
+    if (!isMedicationActiveOnDate(medication, todayKey)) return null
+    if (!isRuleEnabledOnDate(rule, todayKey)) return null
+
+    const scheduledAt = `${todayKey}T${rule.time}`
+
+    const event = events.find(
+      (item) => item.medicationId === medication.id && item.scheduledAt === scheduledAt
+    )
+
+    const status = rule.enabled ? (event?.status || 'pending') : 'off'
+
+    return {
+      id: `${rule.id}-${todayKey}`,
+      medId: medication.id,
+      drugName: medication.drugName,
+      doseText: `${medication.dose}${medication.unit}`,
+      withMeal: medication.withMeal,
+      time: rule.time,
+      scheduledAt,
+      status,
+      takenAt: event?.status === 'taken' ? (event.takenAt || '') : '',
+    }
+  }).filter(Boolean)
+
+  return rows.sort((a, b) => (a.time > b.time ? 1 : -1))
+}
+
+export function getRecentLogs(input, logsInput, days = 7) {
+  const context = resolveContext(input, logsInput)
+  const events = collectReminderEvents(context)
+
+  const endDate = new Date()
+  const startDate = addDays(endDate, -(days - 1))
+  const startKey = toDateKey(startDate)
+  const endKey = toDateKey(endDate)
+
+  return events.filter((event) => {
+    const dateKey = (event.scheduledAt || '').slice(0, 10)
+    return dateKey >= startKey && dateKey <= endKey
+  })
+}
+
+export function calculateSevenDayAdherence(input, logsInput) {
+  const context = resolveContext(input, logsInput)
+  const events = collectReminderEvents(context)
+  const dayKeys = getWeekDateKeys()
+
+  const totals = dayKeys.reduce((acc, dateKey) => {
+    const stat = getDailyStats(context, dateKey, events)
+    return {
+      expected: acc.expected + stat.expected,
+      takenCount: acc.takenCount + stat.taken,
+      missedCount: acc.missedCount + stat.missed,
+      skippedCount: acc.skippedCount + stat.skipped,
+      pendingCount: acc.pendingCount + stat.pending,
+    }
+  }, {
+    expected: 0,
+    takenCount: 0,
+    missedCount: 0,
+    skippedCount: 0,
+    pendingCount: 0,
+  })
+
+  const adherence = totals.expected === 0
+    ? 100
+    : Math.round((totals.takenCount / totals.expected) * 100)
+
+  return {
+    expected: totals.expected,
+    takenCount: totals.takenCount,
+    missedCount: totals.missedCount,
+    skippedCount: totals.skippedCount,
+    pendingCount: totals.pendingCount,
+    adherence,
+  }
+}
+
+export function getSevenDayTrendData(input, logsInput) {
+  const context = resolveContext(input, logsInput)
+  const events = collectReminderEvents(context)
+
+  return getWeekDateKeys().map((dateKey) => {
+    const stat = getDailyStats(context, dateKey, events)
+
+    return {
+      dateKey,
+      label: formatMonthDay(dateKey),
+      expected: stat.expected,
+      taken: stat.taken,
+      missed: stat.missed,
+      adherence: stat.adherence,
+    }
+  })
+}
+
+export function getLateNightMissedCount(input, logsInput) {
+  const context = resolveContext(input, logsInput)
+  const events = collectReminderEvents(context)
+
+  return events.filter((event) => {
+    if (event.status !== 'missed') return false
+    const time = (event.scheduledAt || '').slice(11, 16)
+    return toMinutes(time) >= 20 * 60
+  }).length
+}
+
+export function getAiSuggestion(input, logsInput) {
+  const summary = calculateSevenDayAdherence(input, logsInput)
+  const lateNightMissed = getLateNightMissedCount(input, logsInput)
+
+  if (lateNightMissed >= 2) {
+    return '最近7天晚间漏服较多，建议开启睡前提醒并将药盒放在床头可见位置。'
+  }
+
+  if (summary.adherence < 80) {
+    return '近期总体依从率偏低，建议固定早晚两个闹钟并关联家属提醒。'
+  }
+
+  if (summary.missedCount > 0) {
+    return '近期存在偶发漏服，建议在早餐后立即打卡，形成固定行为习惯。'
+  }
+
+  return '过去7天用药表现稳定，建议继续保持，并在复诊前导出用药记录。'
+}
+
+export function getUpcomingRefill(input, maybeRules = []) {
+  const context = Array.isArray(input)
+    ? { medications: input, reminderRules: maybeRules }
+    : resolveContext(input)
+
+  const medications = context.medications || []
+  const reminderRules = context.reminderRules || []
+
+  const enriched = medications
+    .map((medication) => {
+      const rulesForMedication = reminderRules.filter((rule) => rule.medicationId === medication.id && rule.enabled)
+      const dailyUse = Number(medication.dose || 1) * resolveMedicationFrequency(medication, rulesForMedication)
+      const safeDailyUse = dailyUse > 0 ? dailyUse : 1
+      const remainingDays = Math.max(0, Math.floor(Number(medication.stockQty || 0) / safeDailyUse))
+
+      return {
+        ...medication,
+        dailyUse: Number(safeDailyUse.toFixed(2)),
+        remainingDays,
+      }
+    })
+    .sort((a, b) => a.remainingDays - b.remainingDays)
+
+  return enriched[0] || null
+}
+
+export function getMockHealthMetrics(adherence) {
+  const today = new Date()
+  const daySeed = Number(toDateKey(today).replace(/-/g, '').slice(-2))
+  const systolic = 118 + (daySeed % 7)
+  const diastolic = 73 + (daySeed % 6)
+  const glucose = (5.2 + ((daySeed % 8) * 0.12)).toFixed(1)
+
+  return {
+    bloodPressure: `${systolic}/${diastolic}`,
+    bloodSugar: `${glucose} mmol/L`,
+    adherence: `${adherence}%`,
+  }
+}
+
+export function getConsultSummary(input, logsInput) {
+  const context = resolveContext(input, logsInput)
+  const sevenDay = calculateSevenDayAdherence(context)
+  const recentEvents = getRecentLogs(context, undefined, 7)
+
+  const adverseFromEvents = recentEvents
+    .filter((event) => Boolean(event.reason))
+    .map((event) => `${event.scheduledAt.slice(0, 10)} ${event.reason}`)
+
+  const adverseFromRecords = (context.adverseEvents || [])
+    .map((event) => `${(event.eventTime || '').slice(0, 10)} ${event.symptom}`)
+    .filter((line) => line.trim().length > 0)
+
+  const adverseList = [...adverseFromRecords, ...adverseFromEvents]
+
+  const latestMissedDate = recentEvents
+    .filter((event) => event.status === 'missed')
+    .map((event) => event.scheduledAt.slice(0, 10))
+    .sort()
+    .pop()
+
+  const nextVisit = addDays(new Date(), sevenDay.adherence < 80 ? 5 : 14)
+
+  const summaryText =
+    sevenDay.adherence < 80
+      ? '近7天依从率偏低，建议尽快复诊评估当前方案，重点沟通晚间漏服场景与提醒策略。'
+      : '近7天用药整体平稳，建议按计划复诊并携带本报告，便于医生快速评估疗效。'
+
+  return {
+    ...sevenDay,
+    adverseCount: adverseList.length,
+    adverseText: adverseList.length > 0 ? adverseList.join('；') : '近7天未记录明确不良反应。',
+    latestMissedDate: latestMissedDate || '无',
+    nextVisitDate: toDateKey(nextVisit),
+    aiSummary: summaryText,
+  }
+}
+
+export function getDoctorReadableReport(store) {
+  const context = resolveContext(store)
+  const summary = getConsultSummary(context)
+  const refill = getUpcomingRefill(context)
+  const lateNightMissed = getLateNightMissedCount(context)
+
+  const profile = context.userProfile || getDefaultProfile()
+
+  let missedRisk = '低风险'
+  let missedRiskDesc = '近7日漏服风险可控，继续维持现有提醒策略。'
+
+  if (summary.adherence < 80 || lateNightMissed >= 2) {
+    missedRisk = '中高风险'
+    missedRiskDesc = '漏服主要集中在晚间场景，建议与患者讨论提醒方式和家属协同监督。'
+  } else if (summary.missedCount > 0 || summary.adherence < 90) {
+    missedRisk = '中等风险'
+    missedRiskDesc = '存在零星漏服，建议复盘具体诱因并优化日常服药触发点。'
+  }
+
+  const refillAdvice = refill
+    ? `${refill.drugName} 预计剩余 ${refill.remainingDays} 天，建议在 3-5 天内完成复诊续方，避免断药。`
+    : '当前暂无明确续方风险。'
+
+  const communicationFocus = [
+    '确认晚间服药执行障碍（外出、遗忘、睡前作息不固定）并制定替代提醒方案。',
+    '复核现有血压/血糖控制目标，结合依从率变化评估是否需要调整剂量。',
+    '明确续方时间节点与购药计划，减少重复购药与断药并存的风险。',
+  ]
+
+  return {
+    profile,
+    adherence: summary.adherence,
+    adverseText: summary.adverseText,
+    missedRisk,
+    missedRiskDesc,
+    refillAdvice,
+    communicationFocus,
+    summary,
+  }
+}
+
+export function buildConsultCopyText(store) {
+  const report = getDoctorReadableReport(store)
+  const diseases = (report.profile.diseases || []).join('、')
+
+  return [
+    '【AI复诊摘要】',
+    `患者：${report.profile.name}，${report.profile.age}岁，${report.profile.gender}`,
+    `慢病：${diseases}`,
+    `近7日依从率：${report.adherence}%`,
+    `漏服风险：${report.missedRisk}（${report.missedRiskDesc}）`,
+    `不良反应：${report.adverseText}`,
+    `续方建议：${report.refillAdvice}`,
+    '医生沟通重点：',
+    `1. ${report.communicationFocus[0]}`,
+    `2. ${report.communicationFocus[1]}`,
+    `3. ${report.communicationFocus[2]}`,
+  ].join('\n')
+}
+
+export function getPurchaseInsights(input, maybeRules = []) {
+  const context = Array.isArray(input)
+    ? { medications: input, reminderRules: maybeRules }
+    : resolveContext(input)
+
+  const medications = context.medications || []
+  const reminderRules = context.reminderRules || []
+
+  return medications.map((medication) => {
+    const rulesForMedication = reminderRules.filter((rule) => rule.medicationId === medication.id && rule.enabled)
+    const frequency = resolveMedicationFrequency(medication, rulesForMedication)
+    const dailyUse = Math.max(1, Number(medication.dose || 1) * frequency)
+    const stock = Number(medication.stockQty || 0)
+    const remainingDays = Math.floor(stock / dailyUse)
+
+    const lowStock = remainingDays <= 7
+    const duplicateRisk = remainingDays >= 20
+
+    return {
+      ...medication,
+      dailyUse: Number(dailyUse.toFixed(2)),
+      remainingDays,
+      lowStock,
+      duplicateRisk,
+      riskMessage: lowStock
+        ? `${medication.drugName} 预计 ${Math.max(remainingDays, 0)} 天后用完，建议优先补货并发起续方。`
+        : duplicateRisk
+          ? `${medication.drugName} 当前库存可用 ${remainingDays} 天，暂不建议重复购药。`
+          : `${medication.drugName} 库存预计可用 ${remainingDays} 天，当前购药风险较低。`,
+    }
+  })
+}
+
+export function getWeekWindowLabel() {
+  const end = new Date()
+  const start = addDays(end, -6)
+
+  const startText = `${String(start.getMonth() + 1).padStart(2, '0')}-${String(start.getDate()).padStart(2, '0')}`
+  const endText = `${String(end.getMonth() + 1).padStart(2, '0')}-${String(end.getDate()).padStart(2, '0')}`
+
+  return `${startText} ~ ${endText}`
+}
+
+```
+
+### 文件：src/data/mock.js
+```js
+const today = new Date()
+const todayKey = today.toISOString().slice(0, 10)
+
+function formatTime(date) {
+  return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`
+}
+
+const soon = new Date(today.getTime() + 10 * 60 * 1000)
+const later = new Date(today.getTime() + 50 * 60 * 1000)
+const doneAt = new Date(today.getTime() - 90 * 60 * 1000)
+
+const timeSoon = formatTime(soon)
+const timeLater = formatTime(later)
+const timeDone = formatTime(doneAt)
+
+export const mockStore = {
+  schemaVersion: 2,
+  medications: [
+    {
+      id: 'med-1',
+      drugName: '缬沙坦片',
+      spec: '80mg*14片',
+      dose: 1,
+      unit: '片',
+      withMeal: '饭后',
+      stockQty: 20,
+      stockUnit: '片',
+      startDate: todayKey,
+      endDate: '',
+      sourceLabel: '处方导入',
+    },
+    {
+      id: 'med-2',
+      drugName: '盐酸二甲双胍片',
+      spec: '500mg*60片',
+      dose: 1,
+      unit: '片',
+      withMeal: '饭中',
+      stockQty: 45,
+      stockUnit: '片',
+      startDate: todayKey,
+      endDate: '',
+      sourceLabel: '处方导入',
+    },
+    {
+      id: 'med-3',
+      drugName: '阿托伐他汀钙片',
+      spec: '20mg*7片',
+      dose: 1,
+      unit: '片',
+      withMeal: '睡前',
+      stockQty: 12,
+      stockUnit: '片',
+      startDate: todayKey,
+      endDate: '',
+      sourceLabel: '手动录入',
+    },
+  ],
+  reminderRules: [
+    {
+      id: 'rule-1',
+      medicationId: 'med-1',
+      time: timeDone,
+      enabled: true,
+      repeatDays: [0, 1, 2, 3, 4, 5, 6],
+      retryIntervalMinutes: 5,
+      maxRetryCount: 3,
+      createdAt: today.toISOString(),
+      updatedAt: today.toISOString(),
+    },
+    {
+      id: 'rule-2',
+      medicationId: 'med-2',
+      time: timeSoon,
+      enabled: true,
+      repeatDays: [0, 1, 2, 3, 4, 5, 6],
+      retryIntervalMinutes: 5,
+      maxRetryCount: 3,
+      createdAt: today.toISOString(),
+      updatedAt: today.toISOString(),
+    },
+    {
+      id: 'rule-3',
+      medicationId: 'med-3',
+      time: timeLater,
+      enabled: true,
+      repeatDays: [0, 1, 2, 3, 4, 5, 6],
+      retryIntervalMinutes: 10,
+      maxRetryCount: 3,
+      createdAt: today.toISOString(),
+      updatedAt: today.toISOString(),
+    },
+  ],
+  reminderInstances: [
+    {
+      id: 'ins-1',
+      ruleId: 'rule-1',
+      medicationId: 'med-1',
+      scheduledAt: `${todayKey}T${timeDone}`,
+      currentTriggerAt: `${todayKey}T${timeDone}`,
+      retryCount: 0,
+      internalStatus: 'completed',
+      visibleStatus: 'taken',
+      lastNotifiedAt: '',
+      completedAt: doneAt.toISOString(),
+    },
+    {
+      id: 'ins-2',
+      ruleId: 'rule-2',
+      medicationId: 'med-2',
+      scheduledAt: `${todayKey}T${timeSoon}`,
+      currentTriggerAt: soon.toISOString(),
+      retryCount: 0,
+      internalStatus: 'waiting',
+      visibleStatus: 'pending',
+      lastNotifiedAt: '',
+      completedAt: '',
+    },
+    {
+      id: 'ins-3',
+      ruleId: 'rule-3',
+      medicationId: 'med-3',
+      scheduledAt: `${todayKey}T${timeLater}`,
+      currentTriggerAt: later.toISOString(),
+      retryCount: 0,
+      internalStatus: 'waiting',
+      visibleStatus: 'pending',
+      lastNotifiedAt: '',
+      completedAt: '',
+    },
+  ],
+  intakeLogs: [
+    {
+      id: 'log-1',
+      medicationId: 'med-1',
+      medId: 'med-1',
+      reminderInstanceId: 'ins-1',
+      scheduledAt: `${todayKey}T${timeDone}`,
+      takenAt: doneAt.toISOString(),
+      status: 'taken',
+      reason: '',
+    },
+  ],
+  reminderQueue: [],
+  userProfile: {
+    name: '张先生',
+    age: 58,
+    gender: '男',
+    diseases: ['高血压', '2型糖尿病'],
+    diagnosisDate: '2018-03-12',
+    note: '请持续监测血压血糖并规律复诊。',
+  },
+  adverseEvents: [],
+  demoMeta: {
+    mode: 'default',
+    generatedAt: '',
+    label: '基础数据',
+  },
+}
+
+```
+
+### 文件：src/hooks/useReminderEngine.js
+```js
+import { useEffect, useState } from 'react'
+import {
+  ensureTodayReminderLogs,
+  getReminderQueueItems,
+  markReminderTaken,
+  processReminderCycle,
+  skipReminder,
+  snoozeReminder,
+  subscribeStoreUpdates,
+} from '../utils/storage'
+import {
+  ensureNotificationPermission,
+  sendMedicationNotification,
+} from '../utils/notification'
+
+export default function useReminderEngine() {
+  const [activeReminders, setActiveReminders] = useState([])
+  const [permissionState, setPermissionState] = useState('default')
+
+  useEffect(() => {
+    let mounted = true
+
+    const refreshQueue = () => {
+      if (!mounted) return
+      setActiveReminders(getReminderQueueItems())
+    }
+
+    const runCycle = () => {
+      const { notifiedItems } = processReminderCycle()
+
+      notifiedItems.forEach((item) => {
+        sendMedicationNotification(item.drugName)
+      })
+
+      refreshQueue()
+    }
+
+    ensureTodayReminderLogs()
+
+    ensureNotificationPermission().then((permission) => {
+      if (!mounted) return
+      setPermissionState(permission)
+      runCycle()
+    })
+
+    const interval = setInterval(runCycle, 10000)
+    const unsubscribe = subscribeStoreUpdates(refreshQueue)
+
+    const handleVisibility = () => {
+      if (document.visibilityState !== 'visible') return
+      runCycle()
+    }
+
+    document.addEventListener('visibilitychange', handleVisibility)
+
+    return () => {
+      mounted = false
+      clearInterval(interval)
+      unsubscribe()
+      document.removeEventListener('visibilitychange', handleVisibility)
+    }
+  }, [])
+
+  return {
+    activeReminders,
+    permissionState,
+    takeReminder: (reminderId) => markReminderTaken(reminderId),
+    snoozeReminder: (reminderId) => snoozeReminder(reminderId),
+    skipReminder: (reminderId) => skipReminder(reminderId),
+  }
+}
+
+```
+
+### 文件：src/components/ReminderModal.jsx
+```jsx
+import MedicalIcon from './MedicalIcon'
+
+function formatTime(value) {
+  if (!value) return '--:--'
+  return value.slice(11, 16)
+}
+
+export default function ReminderModal({
+  reminders,
+  onTake,
+  onSnooze,
+  onSkip,
+  permissionState,
+}) {
+  if (!reminders || reminders.length === 0) return null
+
+  return (
+    <div className="fixed inset-0 z-50 reminder-overlay flex items-end justify-center bg-slate-900/45 p-3 backdrop-blur-sm">
+      <div className="reminder-sheet max-h-[88vh] w-full max-w-md overflow-y-auto rounded-3xl bg-white p-4 shadow-[0_30px_60px_-24px_rgba(2,132,199,0.65)]">
+        <div className="mb-3 flex items-center justify-between">
+          <div>
+            <p className="text-xs text-medical-600">智能用药提醒</p>
+            <h2 className="text-lg font-semibold text-slate-900">现在该服药了</h2>
+          </div>
+          <span className="rounded-full bg-medical-50 px-2 py-1 text-[11px] text-medical-700">
+            {reminders.length} 条待处理
+          </span>
+        </div>
+
+        {permissionState === 'denied' ? (
+          <p className="mb-3 rounded-xl bg-amber-50 px-3 py-2 text-xs text-amber-700">
+            浏览器通知权限未开启，已自动降级为站内提醒弹层。
+          </p>
+        ) : null}
+
+        <div className="space-y-3">
+          {reminders.map((reminder) => {
+            const medication = reminder.medication || {}
+            const rule = reminder.rule || {}
+
+            return (
+              <article key={reminder.id} className="rounded-2xl border border-medical-100 bg-gradient-to-r from-cyan-50/60 to-white p-3">
+                <div className="mb-2 flex items-center justify-between">
+                  <p className="text-sm font-semibold text-slate-900">{medication.drugName || '药品提醒'}</p>
+                  <span className="rounded-full bg-rose-100 px-2 py-1 text-[11px] text-rose-700">响铃中</span>
+                </div>
+
+                <p className="text-xs text-slate-600">
+                  {formatTime(reminder.scheduledAt)} · {medication.dose || '--'}{medication.unit || ''} · {medication.withMeal || '按医嘱'}
+                </p>
+                <p className="mt-1 text-xs text-slate-500">
+                  本次第 {reminder.attemptNo || 1} 次提醒 · 剩余 {reminder.remainingRetryCount || 0} 次
+                </p>
+                <p className="mt-1 text-xs text-slate-500">
+                  稍后提醒间隔：{rule.retryIntervalMinutes || 5} 分钟
+                </p>
+
+                <div className="mt-3 grid grid-cols-3 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => onTake(reminder.id)}
+                    className="rounded-lg bg-medical-600 px-2 py-2 text-xs font-medium text-white transition hover:bg-medical-700"
+                  >
+                    已服药
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onSnooze(reminder.id)}
+                    className="rounded-lg bg-amber-100 px-2 py-2 text-xs font-medium text-amber-700 transition hover:bg-amber-200"
+                  >
+                    稍后提醒
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onSkip(reminder.id)}
+                    className="rounded-lg bg-slate-100 px-2 py-2 text-xs font-medium text-slate-700 transition hover:bg-slate-200"
+                  >
+                    跳过本次
+                  </button>
+                </div>
+              </article>
+            )
+          })}
+        </div>
+
+        <div className="mt-3 flex items-center gap-1 text-[11px] text-slate-500">
+          <MedicalIcon name="alert" className="h-3.5 w-3.5" />
+          达到最大提醒次数后仍未处理，将自动标记为已漏服。
+        </div>
+      </div>
+    </div>
+  )
+}
+
+```
+
+### 文件：src/pages/PlanPage.jsx
+```jsx
+import { useMemo, useState } from 'react'
+import PageHeader from '../components/PageHeader'
+import useStoreSnapshot from '../hooks/useStoreSnapshot'
+import {
+  addMedication,
+  deleteMedication,
+  updateMedication,
+} from '../utils/storage'
+
+const initialForm = {
+  drugName: '',
+  spec: '',
+  dose: 1,
+  unit: '片',
+  withMeal: '饭后',
+  stockQty: 30,
+  stockUnit: '片',
+  startDate: new Date().toISOString().slice(0, 10),
+  endDate: '',
+  sourceLabel: '手动录入',
+}
+
+export default function PlanPage() {
+  const store = useStoreSnapshot()
+  const medications = useMemo(() => store.medications || [], [store])
+
+  const [form, setForm] = useState(initialForm)
+  const [editingId, setEditingId] = useState('')
+
+  const handleChange = (event) => {
+    const { name, value } = event.target
+    setForm((prev) => ({ ...prev, [name]: value }))
+  }
+
+  const handleSubmit = (event) => {
+    event.preventDefault()
+
+    if (!form.drugName.trim()) return
+
+    const payload = {
+      drugName: form.drugName.trim(),
+      spec: form.spec.trim(),
+      dose: Number(form.dose || 1),
+      unit: form.unit,
+      withMeal: form.withMeal,
+      stockQty: Number(form.stockQty || 0),
+      stockUnit: form.stockUnit,
+      startDate: form.startDate,
+      endDate: form.endDate,
+      sourceLabel: form.sourceLabel,
+    }
+
+    if (editingId) {
+      updateMedication(editingId, payload)
+    } else {
+      addMedication(payload)
+    }
+
+    setForm(initialForm)
+    setEditingId('')
+  }
+
+  const handleEdit = (medication) => {
+    setEditingId(medication.id)
+    setForm({
+      drugName: medication.drugName || '',
+      spec: medication.spec || '',
+      dose: medication.dose || 1,
+      unit: medication.unit || '片',
+      withMeal: medication.withMeal || '饭后',
+      stockQty: medication.stockQty || 0,
+      stockUnit: medication.stockUnit || '片',
+      startDate: medication.startDate || initialForm.startDate,
+      endDate: medication.endDate || '',
+      sourceLabel: medication.sourceLabel || '手动录入',
+    })
+  }
+
+  const handleDelete = (id) => {
+    deleteMedication(id)
+    if (editingId === id) {
+      setEditingId('')
+      setForm(initialForm)
+    }
+  }
+
+  return (
+    <section className="space-y-4">
+      <PageHeader title="用药计划" subtitle="仅管理药品属性，不在此页面设置闹钟" />
+
+      <form onSubmit={handleSubmit} className="space-y-3 rounded-2xl bg-white p-4 shadow-card">
+        <input
+          name="drugName"
+          value={form.drugName}
+          onChange={handleChange}
+          placeholder="药品名称（必填）"
+          className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-medical-600"
+        />
+
+        <input
+          name="spec"
+          value={form.spec}
+          onChange={handleChange}
+          placeholder="规格，如 500mg*20片"
+          className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-medical-600"
+        />
+
+        <div className="grid grid-cols-2 gap-2">
+          <input
+            name="dose"
+            type="number"
+            min="0"
+            step="0.5"
+            value={form.dose}
+            onChange={handleChange}
+            placeholder="每次剂量"
+            className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-medical-600"
+          />
+          <input
+            name="unit"
+            value={form.unit}
+            onChange={handleChange}
+            placeholder="单位"
+            className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-medical-600"
+          />
+        </div>
+
+        <div className="grid grid-cols-2 gap-2">
+          <input
+            name="withMeal"
+            value={form.withMeal}
+            onChange={handleChange}
+            placeholder="饭前/饭后"
+            className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-medical-600"
+          />
+          <select
+            name="sourceLabel"
+            value={form.sourceLabel}
+            onChange={handleChange}
+            className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-medical-600"
+          >
+            <option value="手动录入">手动录入</option>
+            <option value="处方导入">处方导入</option>
+          </select>
+        </div>
+
+        <div className="grid grid-cols-2 gap-2">
+          <input
+            name="stockQty"
+            type="number"
+            min="0"
+            value={form.stockQty}
+            onChange={handleChange}
+            placeholder="当前库存"
+            className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-medical-600"
+          />
+          <input
+            name="stockUnit"
+            value={form.stockUnit}
+            onChange={handleChange}
+            placeholder="库存单位"
+            className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-medical-600"
+          />
+        </div>
+
+        <div className="grid grid-cols-2 gap-2">
+          <input
+            name="startDate"
+            type="date"
+            value={form.startDate}
+            onChange={handleChange}
+            className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-medical-600"
+          />
+          <input
+            name="endDate"
+            type="date"
+            value={form.endDate}
+            onChange={handleChange}
+            className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-medical-600"
+          />
+        </div>
+
+        <div className="grid grid-cols-2 gap-2">
+          <button
+            type="submit"
+            className="w-full rounded-xl bg-medical-600 px-3 py-2 text-sm font-medium text-white transition hover:bg-medical-700"
+          >
+            {editingId ? '保存药品修改' : '新增药品'}
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              setEditingId('')
+              setForm(initialForm)
+            }}
+            className="w-full rounded-xl bg-slate-100 px-3 py-2 text-sm font-medium text-slate-700"
+          >
+            清空
+          </button>
+        </div>
+      </form>
+
+      <div className="space-y-3">
+        {medications.map((item) => (
+          <article key={item.id} className="rounded-2xl bg-white p-4 shadow-card">
+            <div className="flex items-start justify-between gap-2">
+              <div>
+                <p className="text-sm font-semibold text-slate-900">{item.drugName}</p>
+                <p className="mt-1 text-xs text-slate-500">{item.spec || '未填写规格'}</p>
+                <p className="mt-1 text-xs text-slate-500">
+                  {item.dose}{item.unit} · {item.withMeal}
+                </p>
+                <p className="mt-1 text-xs text-slate-500">
+                  库存 {item.stockQty}{item.stockUnit}
+                </p>
+                <p className="mt-1 text-xs text-slate-500">
+                  疗程 {item.startDate || '未设定'} ~ {item.endDate || '长期'}
+                </p>
+                <span className="mt-2 inline-flex rounded-full bg-slate-100 px-2 py-1 text-[11px] text-slate-600">
+                  来源：{item.sourceLabel || '手动录入'}
+                </span>
+              </div>
+
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => handleEdit(item)}
+                  className="rounded-lg border border-medical-200 px-2 py-1 text-xs text-medical-700"
+                >
+                  编辑
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleDelete(item.id)}
+                  className="rounded-lg border border-rose-200 px-2 py-1 text-xs text-rose-600"
+                >
+                  删除
+                </button>
+              </div>
+            </div>
+          </article>
+        ))}
+      </div>
+    </section>
+  )
+}
+
+```
+
+### 文件：src/pages/RemindersPage.jsx
+```jsx
+import { useMemo, useState } from 'react'
+import MedicalIcon from '../components/MedicalIcon'
+import useStoreSnapshot from '../hooks/useStoreSnapshot'
+import {
+  addReminderRule,
+  getReminderRulesWithToday,
+  markAllTodayTaken,
+  markReminderMissed,
+  markReminderTaken,
+  postponeReminderBeforeRing,
+  restoreReminderDemoData,
+  skipReminder,
+  toggleReminderRule,
+  triggerReminderNow,
+} from '../utils/storage'
+
+const statusStyle = {
+  off: 'bg-slate-100 text-slate-700',
+  pending: 'bg-amber-100 text-amber-700',
+  taken: 'bg-emerald-100 text-emerald-700',
+  missed: 'bg-rose-100 text-rose-700',
+  skipped: 'bg-slate-200 text-slate-700',
+}
+
+const statusLabel = {
+  off: '关闭',
+  pending: '待服药',
+  taken: '已服药',
+  missed: '已漏服',
+  skipped: '已跳过',
+}
+
+function formatTime(value) {
+  if (!value) return '--:--'
+  return value.slice(11, 16)
+}
+
+function formatDistance(target) {
+  if (!target) return '暂无'
+
+  const diffMs = new Date(target).getTime() - Date.now()
+  if (diffMs <= 0) return '即将触发'
+
+  const minutes = Math.ceil(diffMs / 60000)
+  return `${minutes} 分钟后`
+}
+
+function nextTenMinutesTime() {
+  const date = new Date(Date.now() + 10 * 60 * 1000)
+  const hour = `${date.getHours()}`.padStart(2, '0')
+  const minute = `${date.getMinutes()}`.padStart(2, '0')
+  return `${hour}:${minute}`
+}
+
+export default function RemindersPage() {
+  const [message, setMessage] = useState('')
+  const [newRule, setNewRule] = useState({
+    medicationId: '',
+    time: nextTenMinutesTime(),
+    retryIntervalMinutes: 5,
+    maxRetryCount: 3,
+    enabled: true,
+  })
+
+  const store = useStoreSnapshot({ ensureToday: true })
+
+  const medications = store.medications || []
+  const rules = useMemo(() => getReminderRulesWithToday(), [store])
+
+  const pendingCount = rules.filter((item) => item.todayStatus === 'pending').length
+  const takenCount = rules.filter((item) => item.todayStatus === 'taken').length
+  const missedCount = rules.filter((item) => item.todayStatus === 'missed').length
+  const offCount = rules.filter((item) => item.todayStatus === 'off').length
+
+  const nextTrigger = rules
+    .filter((item) => item.enabled && item.todayStatus === 'pending' && item.nextTriggerAt)
+    .sort((a, b) => (a.nextTriggerAt > b.nextTriggerAt ? 1 : -1))[0]
+
+  const handleRuleField = (event) => {
+    const { name, value, type, checked } = event.target
+    setNewRule((prev) => ({
+      ...prev,
+      [name]: type === 'checkbox' ? checked : value,
+    }))
+  }
+
+  const handleCreateRule = (event) => {
+    event.preventDefault()
+
+    if (!newRule.medicationId) {
+      setMessage('请先选择已存在药品，再创建提醒。')
+      return
+    }
+
+    addReminderRule({
+      medicationId: newRule.medicationId,
+      time: newRule.time,
+      enabled: Boolean(newRule.enabled),
+      repeatDays: [0, 1, 2, 3, 4, 5, 6],
+      retryIntervalMinutes: Number(newRule.retryIntervalMinutes),
+      maxRetryCount: Number(newRule.maxRetryCount),
+    })
+
+    setMessage('提醒规则已创建。')
+    setNewRule((prev) => ({
+      ...prev,
+      medicationId: '',
+      time: nextTenMinutesTime(),
+      retryIntervalMinutes: 5,
+      maxRetryCount: 3,
+      enabled: true,
+    }))
+  }
+
+  return (
+    <section className="space-y-4">
+      <article className="rounded-3xl bg-gradient-to-br from-cyan-700 via-medical-700 to-emerald-700 p-5 text-white shadow-[0_22px_44px_-20px_rgba(15,118,110,0.85)]">
+        <p className="text-xs text-cyan-100">闹钟规则管理</p>
+        <h1 className="mt-1 text-xl font-semibold">提醒中心</h1>
+        <p className="mt-2 text-xs text-cyan-100">
+          下次触发：{nextTrigger ? `${formatTime(nextTrigger.nextTriggerAt)}（${formatDistance(nextTrigger.nextTriggerAt)}）` : '暂无'}
+        </p>
+      </article>
+
+      {message ? (
+        <article className="rounded-xl border border-emerald-100 bg-emerald-50 px-3 py-2 text-xs text-emerald-700">
+          {message}
+        </article>
+      ) : null}
+
+      <article className="rounded-2xl bg-white p-4 shadow-[0_14px_30px_-22px_rgba(15,23,42,0.9)]">
+        <div className="mb-3 flex items-center justify-between">
+          <p className="text-sm font-semibold text-slate-900">今日状态总览</p>
+          <span className="text-xs text-slate-500">仅展示用户可见状态</span>
+        </div>
+        <p className="text-xs text-slate-600">
+          待服药 {pendingCount} · 已服药 {takenCount} · 已漏服 {missedCount} · 关闭 {offCount}
+        </p>
+
+        <div className="mt-3 grid grid-cols-2 gap-2">
+          <button
+            type="button"
+            onClick={() => {
+              markAllTodayTaken()
+              setMessage('今日待服药已一键标记为已服药。')
+            }}
+            className="rounded-xl bg-medical-600 px-3 py-2 text-xs font-medium text-white"
+          >
+            一键全部已服药
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              restoreReminderDemoData()
+              setMessage('已恢复演示提醒数据。')
+            }}
+            className="rounded-xl bg-slate-900 px-3 py-2 text-xs font-medium text-white"
+          >
+            一键恢复演示提醒数据
+          </button>
+        </div>
+      </article>
+
+      <article className="rounded-2xl bg-white p-4 shadow-[0_14px_30px_-22px_rgba(15,23,42,0.9)]">
+        <p className="text-sm font-semibold text-slate-900">新增提醒规则</p>
+
+        {medications.length === 0 ? (
+          <p className="mt-2 text-xs text-amber-700">请先到“用药计划”新增药品，再创建提醒规则。</p>
+        ) : (
+          <form onSubmit={handleCreateRule} className="mt-3 space-y-2">
+            <select
+              name="medicationId"
+              value={newRule.medicationId}
+              onChange={handleRuleField}
+              className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-medical-600"
+            >
+              <option value="">选择已存在药品</option>
+              {medications.map((medication) => (
+                <option key={medication.id} value={medication.id}>
+                  {medication.drugName}
+                </option>
+              ))}
+            </select>
+
+            <div className="grid grid-cols-3 gap-2">
+              <input
+                name="time"
+                type="time"
+                value={newRule.time}
+                onChange={handleRuleField}
+                className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-medical-600"
+              />
+
+              <select
+                name="retryIntervalMinutes"
+                value={newRule.retryIntervalMinutes}
+                onChange={handleRuleField}
+                className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-medical-600"
+              >
+                <option value={5}>5分钟</option>
+                <option value={10}>10分钟</option>
+                <option value={15}>15分钟</option>
+              </select>
+
+              <select
+                name="maxRetryCount"
+                value={newRule.maxRetryCount}
+                onChange={handleRuleField}
+                className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-medical-600"
+              >
+                <option value={1}>1次</option>
+                <option value={3}>3次</option>
+                <option value={5}>5次</option>
+              </select>
+            </div>
+
+            <label className="flex items-center gap-2 text-xs text-slate-600">
+              <input
+                name="enabled"
+                type="checkbox"
+                checked={Boolean(newRule.enabled)}
+                onChange={handleRuleField}
+              />
+              创建后立即启用
+            </label>
+
+            <button
+              type="submit"
+              className="w-full rounded-xl bg-medical-600 px-3 py-2 text-sm font-medium text-white"
+            >
+              创建提醒规则
+            </button>
+          </form>
+        )}
+      </article>
+
+      <section className="space-y-3">
+        {rules.map((rule) => {
+          const todayItem = rule.todayItem
+          const canPostpone = todayItem
+            && todayItem.visibleStatus === 'pending'
+            && todayItem.internalStatus !== 'ringing'
+
+          return (
+            <article key={rule.id} className="rounded-2xl bg-white p-4 shadow-[0_14px_30px_-22px_rgba(15,23,42,0.9)]">
+              <div className="mb-2 flex items-start justify-between gap-2">
+                <div>
+                  <p className="text-sm font-semibold text-slate-900">{rule.medication?.drugName || '未匹配药品'}</p>
+                  <p className="mt-1 text-xs text-slate-500">提醒时间 {rule.time}</p>
+                </div>
+
+                <details className="relative">
+                  <summary className={`cursor-pointer list-none rounded-full px-2 py-1 text-[11px] font-medium ${statusStyle[rule.todayStatus]}`}>
+                    {statusLabel[rule.todayStatus]}
+                  </summary>
+                  <div className="absolute right-0 z-10 mt-2 w-32 rounded-xl border border-slate-200 bg-white p-2 shadow-xl">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (!todayItem) return
+                        markReminderTaken(todayItem.id)
+                        setMessage(`${rule.medication?.drugName || '当前药品'} 已标记为已服药。`)
+                      }}
+                      className="block w-full rounded-lg px-2 py-1 text-left text-xs text-slate-700 hover:bg-slate-100"
+                    >
+                      标记已服药
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (!todayItem) return
+                        skipReminder(todayItem.id)
+                        setMessage(`${rule.medication?.drugName || '当前药品'} 已标记为已跳过。`)
+                      }}
+                      className="mt-1 block w-full rounded-lg px-2 py-1 text-left text-xs text-slate-700 hover:bg-slate-100"
+                    >
+                      标记已跳过
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (!todayItem) return
+                        markReminderMissed(todayItem.id)
+                        setMessage(`${rule.medication?.drugName || '当前药品'} 已标记为已漏服。`)
+                      }}
+                      className="mt-1 block w-full rounded-lg px-2 py-1 text-left text-xs text-slate-700 hover:bg-slate-100"
+                    >
+                      标记已漏服
+                    </button>
+                  </div>
+                </details>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2 text-xs text-slate-600">
+                <p>重试间隔：{rule.retryIntervalMinutes} 分钟</p>
+                <p>最大提醒次数：{rule.maxRetryCount} 次</p>
+                <p>今日状态：{statusLabel[rule.todayStatus]}</p>
+                <p>下次触发：{rule.nextTriggerAt ? `${formatTime(rule.nextTriggerAt)}（${formatDistance(rule.nextTriggerAt)}）` : '暂无'}</p>
+              </div>
+
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                <label className="inline-flex items-center gap-2 rounded-lg bg-slate-50 px-2 py-1 text-xs text-slate-600">
+                  <input
+                    type="checkbox"
+                    checked={Boolean(rule.enabled)}
+                    onChange={(event) => {
+                      toggleReminderRule(rule.id, event.target.checked)
+                      setMessage(`${rule.medication?.drugName || '提醒规则'} 已${event.target.checked ? '开启' : '关闭'}。`)
+                    }}
+                  />
+                  开关
+                </label>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (!todayItem) return
+                    const changed = postponeReminderBeforeRing(todayItem.id, 5)
+                    if (!changed) {
+                      setMessage('当前提醒已响铃或已完成，无法执行“延后提醒”。')
+                      return
+                    }
+                    setMessage(`${rule.medication?.drugName || '当前药品'} 本次提醒已延后 5 分钟。`)
+                  }}
+                  disabled={!canPostpone}
+                  className="rounded-lg bg-amber-100 px-3 py-1 text-xs font-medium text-amber-700 disabled:opacity-40"
+                >
+                  延后提醒（+5分钟）
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (!todayItem) return
+                    triggerReminderNow(todayItem.id)
+                    setMessage(`${rule.medication?.drugName || '当前药品'} 已手动触发响铃。`)
+                  }}
+                  className="rounded-lg bg-rose-100 px-3 py-1 text-xs font-medium text-rose-700"
+                >
+                  手动触发
+                </button>
+              </div>
+            </article>
+          )
+        })}
+      </section>
+
+      <article className="rounded-2xl bg-white p-4 shadow-[0_14px_30px_-22px_rgba(15,23,42,0.9)]">
+        <div className="mb-2 flex items-center gap-1 text-sm font-semibold text-slate-900">
+          <MedicalIcon name="clock" className="h-4 w-4 text-medical-700" />
+          提醒说明
+        </div>
+        <p className="text-xs leading-5 text-slate-600">
+          “延后提醒”只会调整本次下次触发时间，不改变用户可见状态。响铃后点击弹窗“稍后提醒”会按规则重试；达到最大提醒次数后，系统自动记为“已漏服”。
+        </p>
+      </article>
+    </section>
+  )
+}
+
+```
+
+### 文件：src/pages/HomePage.jsx
+```jsx
+import { Link } from 'react-router-dom'
+import MedicalIcon from '../components/MedicalIcon'
+import useStoreSnapshot from '../hooks/useStoreSnapshot'
+import {
+  calculateSevenDayAdherence,
+  getAiSuggestion,
+  getGreeting,
+  getMockHealthMetrics,
+  getUpcomingRefill,
+} from '../utils/insights'
+import {
+  getTodayDateKey,
+  getTodayReminderItemsFromStore,
+  markReminderTaken,
+  skipReminder,
+} from '../utils/storage'
+
+const statusStyle = {
+  off: 'bg-slate-100 text-slate-700',
+  pending: 'bg-amber-100 text-amber-700',
+  taken: 'bg-emerald-100 text-emerald-700',
+  skipped: 'bg-slate-200 text-slate-700',
+  missed: 'bg-rose-100 text-rose-700',
+}
+
+const statusLabel = {
+  off: '关闭',
+  pending: '待服药',
+  taken: '已服药',
+  skipped: '已跳过',
+  missed: '已漏服',
+}
+
+function formatTime(iso) {
+  if (!iso) return '--:--'
+  return iso.slice(11, 16)
+}
+
+function formatDistance(targetIso) {
+  if (!targetIso) return '暂无'
+
+  const diffMs = new Date(targetIso).getTime() - Date.now()
+  if (diffMs <= 0) return '即将触发'
+
+  return `${Math.ceil(diffMs / 60000)} 分钟后`
+}
+
+export default function HomePage() {
+  const store = useStoreSnapshot({ ensureToday: true })
+  const todayReminders = getTodayReminderItemsFromStore(store, getTodayDateKey())
+
+  const userName = store.userProfile?.name || '张先生'
+
+  const pendingItems = todayReminders.filter((item) => item.visibleStatus === 'pending')
+
+  const statusCount = {
+    off: todayReminders.filter((item) => item.visibleStatus === 'off').length,
+    pending: todayReminders.filter((item) => item.visibleStatus === 'pending').length,
+    taken: todayReminders.filter((item) => item.visibleStatus === 'taken').length,
+    skipped: todayReminders.filter((item) => item.visibleStatus === 'skipped').length,
+    missed: todayReminders.filter((item) => item.visibleStatus === 'missed').length,
+  }
+
+  const nextReminder = [...pendingItems].sort((a, b) => (a.dueAt > b.dueAt ? 1 : -1))[0]
+  const adherenceData = calculateSevenDayAdherence(store)
+  const metrics = getMockHealthMetrics(adherenceData.adherence)
+  const aiSuggestion = getAiSuggestion(store)
+  const refill = getUpcomingRefill(store)
+
+  const loopSteps = [
+    {
+      title: '问诊',
+      icon: 'consult',
+      status: '问诊资料已生成',
+      tone: 'bg-sky-50 text-sky-700 border-sky-100',
+    },
+    {
+      title: '购药',
+      icon: 'purchase',
+      status: '购药风险已检查',
+      tone: 'bg-emerald-50 text-emerald-700 border-emerald-100',
+    },
+    {
+      title: '用药',
+      icon: 'adherence',
+      status: pendingItems.length > 0 ? `今日用药待完成（${pendingItems.length}项）` : '今日用药全部完成',
+      tone: 'bg-amber-50 text-amber-700 border-amber-100',
+    },
+    {
+      title: '续方',
+      icon: 'clock',
+      status: refill ? '续方提醒已开启' : '暂无续方风险',
+      tone: 'bg-purple-50 text-violet-700 border-violet-100',
+    },
+  ]
+
+  return (
+    <section className="space-y-4">
+      <article className="rounded-3xl bg-gradient-to-br from-medical-700 via-medical-600 to-cyan-600 p-5 text-white shadow-[0_20px_40px_-18px_rgba(15,118,110,0.85)]">
+        <p className="text-sm text-cyan-50">{getGreeting()}，{userName}</p>
+        <h1 className="mt-1 text-2xl font-semibold">慢病用药小管家</h1>
+        <p className="mt-2 text-sm text-cyan-50">
+          {pendingItems.length > 0 ? `今天需要完成 ${pendingItems.length} 次服药` : '今日提醒任务已全部完成'}
+        </p>
+
+        <div className="mt-4 grid grid-cols-3 gap-2">
+          <div className="rounded-2xl bg-white/15 p-2 text-center">
+            <p className="text-[11px] text-cyan-100">待服药</p>
+            <p className="mt-1 text-lg font-semibold">{statusCount.pending}</p>
+          </div>
+          <div className="rounded-2xl bg-white/15 p-2 text-center">
+            <p className="text-[11px] text-cyan-100">已服药</p>
+            <p className="mt-1 text-lg font-semibold">{statusCount.taken}</p>
+          </div>
+          <div className="rounded-2xl bg-white/15 p-2 text-center">
+            <p className="text-[11px] text-cyan-100">已漏服</p>
+            <p className="mt-1 text-lg font-semibold">{statusCount.missed}</p>
+          </div>
+        </div>
+      </article>
+
+      <article className="rounded-2xl bg-white p-4 shadow-[0_14px_30px_-20px_rgba(15,23,42,0.8)]">
+        <div className="mb-3 flex items-center justify-between">
+          <p className="text-sm font-semibold text-slate-900">闭环流程追踪</p>
+          <span className="rounded-full bg-medical-50 px-2 py-1 text-[11px] text-medical-700">问诊-购药-用药-续方</span>
+        </div>
+
+        <div className="grid grid-cols-2 gap-2">
+          {loopSteps.map((step, index) => (
+            <div key={step.title} className={`rounded-xl border p-3 ${step.tone}`}>
+              <div className="mb-1 flex items-center gap-1 text-xs font-semibold">
+                <MedicalIcon name={step.icon} className="h-4 w-4" />
+                <span>0{index + 1} {step.title}</span>
+              </div>
+              <p className="text-[11px] leading-5">{step.status}</p>
+            </div>
+          ))}
+        </div>
+      </article>
+
+      <article className="rounded-2xl bg-white p-4 shadow-[0_14px_30px_-20px_rgba(15,23,42,0.8)]">
+        <div className="mb-3 flex items-center justify-between">
+          <p className="text-sm font-semibold text-slate-900">今日提醒状态</p>
+          <span className="rounded-full bg-medical-50 px-2 py-1 text-[11px] text-medical-700">可理解状态</span>
+        </div>
+
+        <div className="grid grid-cols-5 gap-2">
+          {['off', 'pending', 'taken', 'skipped', 'missed'].map((status) => (
+            <div key={status} className="rounded-xl bg-slate-50 p-2">
+              <p className="text-[11px] text-slate-500">{statusLabel[status]}</p>
+              <p className="mt-1 text-base font-semibold text-slate-900">{statusCount[status]}</p>
+            </div>
+          ))}
+        </div>
+
+        <p className="mt-3 text-xs text-slate-500">
+          下次提醒：{nextReminder ? `${formatTime(nextReminder.dueAt)}（${formatDistance(nextReminder.dueAt)}）` : '暂无'}
+        </p>
+      </article>
+
+      <article className="rounded-2xl bg-white p-4 shadow-[0_14px_30px_-20px_rgba(15,23,42,0.8)]">
+        <div className="mb-3 flex items-center justify-between">
+          <p className="text-sm font-semibold text-slate-900">今日健康状态</p>
+          <span className="rounded-full bg-medical-50 px-2 py-1 text-[11px] text-medical-700">自动评估</span>
+        </div>
+        <div className="grid grid-cols-3 gap-2">
+          <div className="rounded-xl bg-gradient-to-b from-red-50 to-white p-2">
+            <div className="flex items-center gap-1 text-rose-500">
+              <MedicalIcon name="pressure" className="h-4 w-4" />
+              <span className="text-[11px]">血压</span>
+            </div>
+            <p className="mt-1 text-sm font-semibold text-slate-800">{metrics.bloodPressure}</p>
+          </div>
+          <div className="rounded-xl bg-gradient-to-b from-cyan-50 to-white p-2">
+            <div className="flex items-center gap-1 text-cyan-600">
+              <MedicalIcon name="sugar" className="h-4 w-4" />
+              <span className="text-[11px]">血糖</span>
+            </div>
+            <p className="mt-1 text-sm font-semibold text-slate-800">{metrics.bloodSugar}</p>
+          </div>
+          <div className="rounded-xl bg-gradient-to-b from-emerald-50 to-white p-2">
+            <div className="flex items-center gap-1 text-emerald-600">
+              <MedicalIcon name="adherence" className="h-4 w-4" />
+              <span className="text-[11px]">依从率</span>
+            </div>
+            <p className="mt-1 text-sm font-semibold text-slate-800">{metrics.adherence}</p>
+          </div>
+        </div>
+      </article>
+
+      <article className="rounded-2xl border border-cyan-100 bg-gradient-to-r from-cyan-50 via-white to-medical-50 p-4 shadow-[0_12px_28px_-20px_rgba(15,118,110,0.7)]">
+        <div className="flex items-start gap-2">
+          <span className="mt-0.5 rounded-lg bg-medical-100 p-1 text-medical-700">
+            <MedicalIcon name="ai" className="h-4 w-4" />
+          </span>
+          <div>
+            <p className="text-sm font-semibold text-slate-900">AI 健康建议</p>
+            <p className="mt-1 text-xs leading-5 text-slate-600">{aiSuggestion}</p>
+          </div>
+        </div>
+      </article>
+
+      <div className="grid grid-cols-2 gap-2">
+        <Link
+          to="/reminders"
+          className="rounded-xl bg-white p-3 text-xs font-medium text-slate-700 shadow-[0_10px_24px_-18px_rgba(15,23,42,0.8)]"
+        >
+          <div className="mb-1 flex items-center gap-1 text-medical-700">
+            <MedicalIcon name="reminder" className="h-4 w-4" /> 提醒中心
+          </div>
+          管理闹钟规则与状态
+        </Link>
+        <Link
+          to="/consult"
+          className="rounded-xl bg-white p-3 text-xs font-medium text-slate-700 shadow-[0_10px_24px_-18px_rgba(15,23,42,0.8)]"
+        >
+          <div className="mb-1 flex items-center gap-1 text-medical-700">
+            <MedicalIcon name="consult" className="h-4 w-4" /> AI复诊摘要
+          </div>
+          查看近7天问诊材料
+        </Link>
+      </div>
+
+      <section className="space-y-3">
+        <h2 className="text-sm font-semibold text-slate-900">今日提醒任务</h2>
+        {todayReminders.map((item) => (
+          <article key={item.id} className="rounded-2xl bg-white p-4 shadow-[0_14px_30px_-22px_rgba(15,23,42,0.9)]">
+            <div className="mb-2 flex items-center justify-between">
+              <p className="text-sm font-semibold text-slate-900">{item.medication?.drugName || '药品提醒'}</p>
+              <span className={`rounded-full px-2 py-1 text-xs font-medium ${statusStyle[item.visibleStatus]}`}>
+                {statusLabel[item.visibleStatus]}
+              </span>
+            </div>
+
+            <p className="text-xs text-slate-500">
+              {formatTime(item.scheduledAt)} · {item.medication?.dose || '--'}{item.medication?.unit || ''} · {item.medication?.withMeal || '按医嘱'}
+            </p>
+
+            {item.visibleStatus === 'pending' ? (
+              <p className="mt-1 text-xs text-slate-500">
+                下次提醒：{formatTime(item.dueAt)}（{formatDistance(item.dueAt)}）
+              </p>
+            ) : null}
+
+            {item.visibleStatus === 'pending' ? (
+              <div className="mt-3 grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => markReminderTaken(item.id)}
+                  className="rounded-lg bg-medical-600 px-2 py-2 text-xs font-medium text-white"
+                >
+                  标记已服药
+                </button>
+                <button
+                  type="button"
+                  onClick={() => skipReminder(item.id)}
+                  className="rounded-lg bg-slate-100 px-2 py-2 text-xs font-medium text-slate-700"
+                >
+                  标记已跳过
+                </button>
+              </div>
+            ) : null}
+          </article>
+        ))}
+      </section>
+    </section>
+  )
+}
+
+```
+
+### 文件：src/pages/ProfilePage.jsx
+```jsx
+import { useEffect, useMemo, useState } from 'react'
+import PageHeader from '../components/PageHeader'
+import useStoreSnapshot from '../hooks/useStoreSnapshot'
+import {
+  clearStoreForDemo,
+  generateDefenseDemoData,
+  updateUserProfile,
+} from '../utils/storage'
+
+function formatDateTime(value) {
+  if (!value) return '未生成'
+
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return '未生成'
+
+  return date.toLocaleString('zh-CN', { hour12: false })
+}
+
+export default function ProfilePage() {
+  const [message, setMessage] = useState('')
+  const store = useStoreSnapshot()
+
+  const userProfile = useMemo(
+    () => store.userProfile || {
+      name: '张先生',
+      age: 58,
+      gender: '男',
+      diseases: ['高血压', '2型糖尿病'],
+      diagnosisDate: '待补充',
+      note: '',
+    },
+    [store.userProfile]
+  )
+
+  const [form, setForm] = useState({
+    name: userProfile.name || '',
+    age: userProfile.age || 58,
+    gender: userProfile.gender || '男',
+    diseases: (userProfile.diseases || []).join('，'),
+    diagnosisDate: userProfile.diagnosisDate || '',
+    note: userProfile.note || '',
+  })
+
+  useEffect(() => {
+    setForm({
+      name: userProfile.name || '',
+      age: userProfile.age || 58,
+      gender: userProfile.gender || '男',
+      diseases: (userProfile.diseases || []).join('，'),
+      diagnosisDate: userProfile.diagnosisDate || '',
+      note: userProfile.note || '',
+    })
+  }, [userProfile])
+
+  const demoMeta = store.demoMeta || {
+    mode: 'default',
+    generatedAt: '',
+    label: '基础数据',
+  }
+
+  const isDefenseMode = demoMeta.mode === 'defense'
+
+  const handleChange = (event) => {
+    const { name, value } = event.target
+    setForm((prev) => ({ ...prev, [name]: value }))
+  }
+
+  const handleSaveProfile = (event) => {
+    event.preventDefault()
+
+    updateUserProfile({
+      name: form.name.trim() || '张先生',
+      age: Number(form.age || 58),
+      gender: form.gender,
+      diseases: form.diseases
+        .split(/[,，]/)
+        .map((item) => item.trim())
+        .filter(Boolean),
+      diagnosisDate: form.diagnosisDate,
+      note: form.note.trim(),
+    })
+
+    setMessage('用户档案已保存，AI复诊报告将自动读取最新档案。')
+  }
+
+  const handleGenerateDemo = () => {
+    generateDefenseDemoData()
+    setMessage('答辩演示数据已生成，可前往首页 / 提醒 / AI复诊 / 购药页演示闭环。')
+  }
+
+  const handleResetDemo = () => {
+    clearStoreForDemo()
+    setMessage('已重置为基础 mock 数据。')
+  }
+
+  return (
+    <section className="space-y-3">
+      <PageHeader title="我的" subtitle="用户档案编辑与比赛演示配置" />
+
+      {message ? (
+        <article className="rounded-xl border border-emerald-100 bg-emerald-50 px-3 py-2 text-xs text-emerald-700">
+          {message}
+        </article>
+      ) : null}
+
+      <form onSubmit={handleSaveProfile} className="space-y-3 rounded-2xl bg-white p-4 shadow-card">
+        <p className="text-sm font-semibold text-slate-900">慢病档案（可编辑）</p>
+
+        <input
+          name="name"
+          value={form.name}
+          onChange={handleChange}
+          placeholder="姓名"
+          className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-medical-600"
+        />
+
+        <div className="grid grid-cols-2 gap-2">
+          <input
+            name="age"
+            type="number"
+            min="1"
+            value={form.age}
+            onChange={handleChange}
+            placeholder="年龄"
+            className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-medical-600"
+          />
+
+          <select
+            name="gender"
+            value={form.gender}
+            onChange={handleChange}
+            className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-medical-600"
+          >
+            <option value="男">男</option>
+            <option value="女">女</option>
+            <option value="其他">其他</option>
+          </select>
+        </div>
+
+        <input
+          name="diseases"
+          value={form.diseases}
+          onChange={handleChange}
+          placeholder="慢病类型，逗号分隔"
+          className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-medical-600"
+        />
+
+        <input
+          name="diagnosisDate"
+          type="date"
+          value={form.diagnosisDate}
+          onChange={handleChange}
+          className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-medical-600"
+        />
+
+        <textarea
+          name="note"
+          value={form.note}
+          onChange={handleChange}
+          rows={3}
+          placeholder="备注"
+          className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-medical-600"
+        />
+
+        <button
+          type="submit"
+          className="w-full rounded-xl bg-medical-600 px-3 py-2 text-sm font-medium text-white"
+        >
+          保存档案
+        </button>
+      </form>
+
+      <article className="rounded-2xl bg-white p-4 shadow-card">
+        <p className="text-sm font-semibold text-slate-900">演示数据状态</p>
+        <p className="mt-2 text-xs text-slate-600">当前模式：{isDefenseMode ? '答辩演示模式' : '基础数据模式'}</p>
+        <p className="mt-1 text-xs text-slate-600">数据标签：{demoMeta.label || '基础数据'}</p>
+        <p className="mt-1 text-xs text-slate-600">生成时间：{formatDateTime(demoMeta.generatedAt)}</p>
+        <p className="mt-1 text-xs text-slate-500">
+          药品数 {(store.medications || []).length} · 提醒规则 {(store.reminderRules || []).length} · 今日实例 {(store.reminderInstances || []).filter((item) => (item.scheduledAt || '').startsWith(new Date().toISOString().slice(0, 10))).length}
+        </p>
+      </article>
+
+      <article className="rounded-2xl bg-white p-4 shadow-card">
+        <p className="text-sm font-semibold text-slate-900">演示工具</p>
+        <p className="mt-2 text-xs text-slate-500">
+          一键生成完整用户旅程数据，快速演示“问诊 - 购药 - 用药 - 续方”闭环。
+        </p>
+
+        <button
+          type="button"
+          onClick={handleGenerateDemo}
+          className="mt-3 w-full rounded-xl bg-medical-600 px-3 py-2 text-sm font-medium text-white transition hover:bg-medical-700"
+        >
+          生成答辩演示数据
+        </button>
+
+        <button
+          type="button"
+          onClick={handleResetDemo}
+          className="mt-2 w-full rounded-xl bg-slate-900 px-3 py-2 text-sm font-medium text-white"
+        >
+          重置演示数据
+        </button>
+      </article>
+    </section>
+  )
+}
+
+```
+
+### 文件：src/pages/ConsultPage.jsx
+```jsx
+import { useMemo, useState } from 'react'
+import MedicalIcon from '../components/MedicalIcon'
+import useStoreSnapshot from '../hooks/useStoreSnapshot'
+import {
+  buildConsultCopyText,
+  getConsultSummary,
+  getDoctorReadableReport,
+  getLateNightMissedCount,
+  getSevenDayTrendData,
+  getWeekWindowLabel,
+} from '../utils/insights'
+
+function copyByExecCommand(text) {
+  const input = document.createElement('textarea')
+  input.value = text
+  input.setAttribute('readonly', 'true')
+  input.style.position = 'fixed'
+  input.style.left = '-9999px'
+  document.body.appendChild(input)
+  input.select()
+  const result = document.execCommand('copy')
+  document.body.removeChild(input)
+  return result
+}
+
+export default function ConsultPage() {
+  const [copyStatus, setCopyStatus] = useState('')
+
+  const store = useStoreSnapshot({ ensureToday: true })
+
+  const summary = getConsultSummary(store)
+  const lateNightMissed = getLateNightMissedCount(store)
+  const trend = getSevenDayTrendData(store)
+  const doctorReport = useMemo(() => getDoctorReadableReport(store), [store])
+
+  const handleCopySummary = async () => {
+    const text = buildConsultCopyText(store)
+
+    try {
+      if (navigator?.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text)
+      } else {
+        const result = copyByExecCommand(text)
+        if (!result) throw new Error('fallback copy failed')
+      }
+
+      setCopyStatus('复诊摘要已复制到剪贴板。')
+    } catch (error) {
+      setCopyStatus('当前浏览器不支持自动复制，请手动复制摘要内容。')
+    }
+  }
+
+  return (
+    <section className="space-y-4">
+      <article className="rounded-3xl bg-gradient-to-br from-sky-700 via-cyan-700 to-teal-700 p-5 text-white shadow-[0_22px_44px_-20px_rgba(3,105,161,0.85)]">
+        <p className="text-xs text-sky-100">互联网医院 · AI复诊摘要</p>
+        <h1 className="mt-1 text-xl font-semibold">慢病复诊报告</h1>
+        <p className="mt-2 text-xs text-sky-100">统计周期：{getWeekWindowLabel()}</p>
+      </article>
+
+      <article className="rounded-2xl bg-white p-4 shadow-[0_14px_30px_-22px_rgba(15,23,42,0.9)]">
+        <p className="text-sm font-semibold text-slate-900">核心指标</p>
+        <div className="mt-3 grid grid-cols-2 gap-2">
+          <div className="rounded-xl bg-slate-50 p-3">
+            <p className="text-xs text-slate-500">用药依从率</p>
+            <p className="mt-1 text-xl font-semibold text-emerald-600">{summary.adherence}%</p>
+          </div>
+          <div className="rounded-xl bg-slate-50 p-3">
+            <p className="text-xs text-slate-500">漏服次数</p>
+            <p className="mt-1 text-xl font-semibold text-rose-600">{summary.missedCount}</p>
+          </div>
+          <div className="rounded-xl bg-slate-50 p-3">
+            <p className="text-xs text-slate-500">晚间漏服</p>
+            <p className="mt-1 text-xl font-semibold text-amber-600">{lateNightMissed}</p>
+          </div>
+          <div className="rounded-xl bg-slate-50 p-3">
+            <p className="text-xs text-slate-500">建议复诊时间</p>
+            <p className="mt-1 text-sm font-semibold text-medical-700">{summary.nextVisitDate}</p>
+          </div>
+        </div>
+      </article>
+
+      <article className="rounded-2xl bg-white p-4 shadow-[0_14px_30px_-22px_rgba(15,23,42,0.9)]">
+        <div className="mb-2 flex items-center justify-between">
+          <p className="text-sm font-semibold text-slate-900">7日用药趋势</p>
+          <span className="text-[11px] text-slate-500">应服 / 实服 / 漏服 / 依从率</span>
+        </div>
+
+        <div className="space-y-3">
+          {trend.map((day) => {
+            const takenWidth = day.expected === 0 ? 0 : Math.round((day.taken / day.expected) * 100)
+            const missedWidth = day.expected === 0 ? 0 : Math.round((day.missed / day.expected) * 100)
+
+            return (
+              <div key={day.dateKey} className="rounded-xl bg-slate-50 p-3">
+                <div className="mb-1 flex items-center justify-between text-xs">
+                  <span className="font-medium text-slate-700">{day.label}</span>
+                  <span className="text-slate-500">{day.adherence}%</span>
+                </div>
+
+                <div className="flex items-center justify-between text-[11px] text-slate-500">
+                  <span>应服 {day.expected}</span>
+                  <span>实服 {day.taken}</span>
+                  <span>漏服 {day.missed}</span>
+                </div>
+
+                <div className="mt-1 h-2 rounded-full bg-slate-200">
+                  <div className="h-2 rounded-full bg-emerald-500" style={{ width: `${takenWidth}%` }} />
+                </div>
+
+                <div className="mt-1 h-1.5 rounded-full bg-rose-100">
+                  <div className="h-1.5 rounded-full bg-rose-500" style={{ width: `${missedWidth}%` }} />
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      </article>
+
+      <article className="rounded-2xl border border-cyan-100 bg-gradient-to-r from-cyan-50 via-white to-medical-50 p-4 shadow-[0_12px_28px_-20px_rgba(15,118,110,0.7)]">
+        <div className="flex items-start gap-2">
+          <span className="mt-0.5 rounded-lg bg-medical-100 p-1 text-medical-700">
+            <MedicalIcon name="ai" className="h-4 w-4" />
+          </span>
+          <div className="flex-1">
+            <p className="text-sm font-semibold text-slate-900">AI生成问诊摘要</p>
+            <p className="mt-1 text-xs leading-5 text-slate-600">{summary.aiSummary}</p>
+            <p className="mt-2 text-xs text-slate-500">最近漏服日期：{summary.latestMissedDate}</p>
+
+            <button
+              type="button"
+              onClick={handleCopySummary}
+              className="mt-3 rounded-lg bg-medical-600 px-3 py-2 text-xs font-medium text-white transition hover:bg-medical-700"
+            >
+              复制复诊摘要
+            </button>
+
+            {copyStatus ? <p className="mt-2 text-xs text-medical-700">{copyStatus}</p> : null}
+          </div>
+        </div>
+      </article>
+
+      <article className="rounded-2xl bg-white p-4 shadow-[0_14px_30px_-22px_rgba(15,23,42,0.9)]">
+        <p className="text-sm font-semibold text-slate-900">医生可读报告卡片</p>
+
+        <div className="mt-3 space-y-2 text-xs leading-5 text-slate-600">
+          <p>
+            <span className="font-medium text-slate-800">患者基本情况：</span>
+            {doctorReport.profile.name}，{doctorReport.profile.gender}，{doctorReport.profile.age}岁，慢病诊断
+            {(doctorReport.profile.diseases || []).join('、')}。
+          </p>
+          <p>
+            <span className="font-medium text-slate-800">近7日用药依从率：</span>
+            {doctorReport.adherence}% ，总体执行
+            {doctorReport.adherence >= 90 ? '较稳定' : doctorReport.adherence >= 80 ? '中等' : '偏低'}。
+          </p>
+          <p>
+            <span className="font-medium text-slate-800">漏服风险：</span>
+            {doctorReport.missedRisk}，{doctorReport.missedRiskDesc}
+          </p>
+          <p>
+            <span className="font-medium text-slate-800">不良反应：</span>
+            {doctorReport.adverseText}
+          </p>
+          <p>
+            <span className="font-medium text-slate-800">续方建议：</span>
+            {doctorReport.refillAdvice}
+          </p>
+          <p>
+            <span className="font-medium text-slate-800">医生沟通重点：</span>
+          </p>
+          <p>1. {doctorReport.communicationFocus[0]}</p>
+          <p>2. {doctorReport.communicationFocus[1]}</p>
+          <p>3. {doctorReport.communicationFocus[2]}</p>
+        </div>
+      </article>
+    </section>
+  )
+}
+
+```
+
+### 文件：src/pages/PurchasePage.jsx
+```jsx
+import { useState } from 'react'
+import MedicalIcon from '../components/MedicalIcon'
+import useStoreSnapshot from '../hooks/useStoreSnapshot'
+import { getPurchaseInsights } from '../utils/insights'
+import { updateMedicationStock } from '../utils/storage'
+
+export default function PurchasePage() {
+  const [message, setMessage] = useState('')
+
+  const store = useStoreSnapshot()
+  const purchaseInsights = getPurchaseInsights(store)
+
+  const lowStockCount = purchaseInsights.filter((item) => item.lowStock).length
+  const duplicateRiskCount = purchaseInsights.filter((item) => item.duplicateRisk).length
+
+  const handleMockPurchase = (item) => {
+    updateMedicationStock(item.id, 30)
+    setMessage(`${item.drugName} 已模拟购药 +30${item.stockUnit}，库存已更新。`)
+  }
+
+  return (
+    <section className="space-y-4">
+      <article className="rounded-3xl bg-gradient-to-br from-teal-700 via-emerald-700 to-cyan-700 p-5 text-white shadow-[0_22px_44px_-20px_rgba(13,148,136,0.85)]">
+        <p className="text-xs text-teal-100">智能购药助手</p>
+        <h1 className="mt-1 text-xl font-semibold">购药预警中心</h1>
+        <p className="mt-2 text-xs text-teal-100">优先补货低库存药品，避免重复下单</p>
+      </article>
+
+      <div className="grid grid-cols-2 gap-2">
+        <article className="rounded-2xl bg-white p-3 shadow-[0_14px_30px_-22px_rgba(15,23,42,0.9)]">
+          <p className="text-xs text-slate-500">库存不足提醒</p>
+          <p className="mt-1 text-xl font-semibold text-rose-600">{lowStockCount}</p>
+        </article>
+        <article className="rounded-2xl bg-white p-3 shadow-[0_14px_30px_-22px_rgba(15,23,42,0.9)]">
+          <p className="text-xs text-slate-500">重复购药风险</p>
+          <p className="mt-1 text-xl font-semibold text-amber-600">{duplicateRiskCount}</p>
+        </article>
+      </div>
+
+      {message ? (
+        <article className="rounded-xl border border-emerald-100 bg-emerald-50 px-3 py-2 text-xs text-emerald-700">
+          {message}
+        </article>
+      ) : null}
+
+      <section className="space-y-3">
+        {purchaseInsights.map((item) => (
+          <article key={item.id} className="rounded-2xl bg-white p-4 shadow-[0_14px_30px_-22px_rgba(15,23,42,0.9)]">
+            <div className="flex items-start justify-between gap-2">
+              <div>
+                <p className="text-sm font-semibold text-slate-900">{item.drugName}</p>
+                <p className="mt-1 text-xs text-slate-500">库存 {item.stockQty}{item.stockUnit}</p>
+                <p className="mt-1 text-xs text-slate-500">预计可用 {item.remainingDays} 天</p>
+              </div>
+              <span
+                className={`rounded-full px-2 py-1 text-[11px] font-medium ${
+                  item.lowStock
+                    ? 'bg-rose-100 text-rose-700'
+                    : item.duplicateRisk
+                      ? 'bg-amber-100 text-amber-700'
+                      : 'bg-emerald-100 text-emerald-700'
+                }`}
+              >
+                {item.lowStock ? '建议补货' : item.duplicateRisk ? '谨慎下单' : '库存正常'}
+              </span>
+            </div>
+
+            <div className="mt-3 rounded-xl bg-slate-50 p-3">
+              <div className="flex items-start gap-2 text-xs text-slate-600">
+                <MedicalIcon
+                  name={item.duplicateRisk ? 'alert' : 'adherence'}
+                  className={`mt-0.5 h-4 w-4 ${item.duplicateRisk ? 'text-amber-600' : 'text-emerald-600'}`}
+                />
+                <p>{item.riskMessage}</p>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => handleMockPurchase(item)}
+              className="mt-3 w-full rounded-xl bg-medical-600 px-3 py-2 text-sm font-medium text-white transition hover:bg-medical-700"
+            >
+              模拟购药（+30{item.stockUnit}）
+            </button>
+          </article>
+        ))}
+      </section>
+    </section>
+  )
+}
+
+```
+
+## 5. 旧数据兼容策略
+- normalizeStoreSchema 会自动识别旧结构并补齐 reminderRules/reminderInstances。
+- 若旧数据仅有 intakeLogs，会按 medId + scheduledAt 时间自动映射/创建 ReminderRule，再生成 ReminderInstance。
+- 旧状态 scheduled/notified/snoozed 会迁移为 visibleStatus=pending + 对应 internalStatus(waiting/ringing/snoozed)。
+- 旧字段 medId/reminderStatus/notifiedAt/snoozeUntil/takenAt 仍会被读取并映射，避免历史数据导致页面崩溃。
+- 迁移后会写回 localStorage 为 schemaVersion=2 新结构。
+
+## 6. 如何运行
+1. npm install
+2. npm run dev
+3. 浏览器打开 http://127.0.0.1:5173
+4. 生产构建校验：npm run build
+
+## 7. 如何验证
+- 用药计划只管理药品：进入 /plan，确认没有提醒时间输入，仅药品属性、库存、疗程、来源标签。
+- 提醒页面可选择药品设置闹钟：进入 /reminders，新增规则时必须从药品下拉选择。
+- 开关控制提醒：在规则卡片切换‘开关’，今日状态应切换为关闭/待服药。
+- 延后提醒只改下次触发时间：规则卡片点‘延后提醒（+5分钟）’，状态保持待服药，仅 nextTriggerAt 后移。
+- 弹窗稍后提醒不显示延后状态：触发弹窗后点‘稍后提醒’，列表仍显示待服药。
+- 达最大提醒次数后才漏服：重复稍后到 maxRetryCount，待下一次触发周期会自动转已漏服。
+- 用户档案可编辑：进入 /profile 修改姓名/年龄/性别/慢病/初诊日期/备注并保存；再到 /consult 验证报告读取最新档案。

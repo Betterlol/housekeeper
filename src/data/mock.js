@@ -1,6 +1,20 @@
-const today = new Date().toISOString().slice(0, 10);
+const today = new Date()
+const todayKey = today.toISOString().slice(0, 10)
+
+function formatTime(date) {
+  return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`
+}
+
+const soon = new Date(today.getTime() + 10 * 60 * 1000)
+const later = new Date(today.getTime() + 50 * 60 * 1000)
+const doneAt = new Date(today.getTime() - 90 * 60 * 1000)
+
+const timeSoon = formatTime(soon)
+const timeLater = formatTime(later)
+const timeDone = formatTime(doneAt)
 
 export const mockStore = {
+  schemaVersion: 2,
   medications: [
     {
       id: 'med-1',
@@ -8,13 +22,12 @@ export const mockStore = {
       spec: '80mg*14片',
       dose: 1,
       unit: '片',
-      frequencyPerDay: 1,
-      times: ['08:00'],
       withMeal: '饭后',
-      startDate: today,
-      endDate: '',
       stockQty: 20,
       stockUnit: '片',
+      startDate: todayKey,
+      endDate: '',
+      sourceLabel: '处方导入',
     },
     {
       id: 'med-2',
@@ -22,13 +35,12 @@ export const mockStore = {
       spec: '500mg*60片',
       dose: 1,
       unit: '片',
-      frequencyPerDay: 2,
-      times: ['08:00', '20:00'],
       withMeal: '饭中',
-      startDate: today,
-      endDate: '',
       stockQty: 45,
       stockUnit: '片',
+      startDate: todayKey,
+      endDate: '',
+      sourceLabel: '处方导入',
     },
     {
       id: 'med-3',
@@ -36,31 +48,112 @@ export const mockStore = {
       spec: '20mg*7片',
       dose: 1,
       unit: '片',
-      frequencyPerDay: 1,
-      times: ['21:00'],
       withMeal: '睡前',
-      startDate: today,
-      endDate: '',
       stockQty: 12,
       stockUnit: '片',
+      startDate: todayKey,
+      endDate: '',
+      sourceLabel: '手动录入',
+    },
+  ],
+  reminderRules: [
+    {
+      id: 'rule-1',
+      medicationId: 'med-1',
+      time: timeDone,
+      enabled: true,
+      repeatDays: [0, 1, 2, 3, 4, 5, 6],
+      retryIntervalMinutes: 5,
+      maxRetryCount: 3,
+      createdAt: today.toISOString(),
+      updatedAt: today.toISOString(),
+    },
+    {
+      id: 'rule-2',
+      medicationId: 'med-2',
+      time: timeSoon,
+      enabled: true,
+      repeatDays: [0, 1, 2, 3, 4, 5, 6],
+      retryIntervalMinutes: 5,
+      maxRetryCount: 3,
+      createdAt: today.toISOString(),
+      updatedAt: today.toISOString(),
+    },
+    {
+      id: 'rule-3',
+      medicationId: 'med-3',
+      time: timeLater,
+      enabled: true,
+      repeatDays: [0, 1, 2, 3, 4, 5, 6],
+      retryIntervalMinutes: 10,
+      maxRetryCount: 3,
+      createdAt: today.toISOString(),
+      updatedAt: today.toISOString(),
+    },
+  ],
+  reminderInstances: [
+    {
+      id: 'ins-1',
+      ruleId: 'rule-1',
+      medicationId: 'med-1',
+      scheduledAt: `${todayKey}T${timeDone}`,
+      currentTriggerAt: `${todayKey}T${timeDone}`,
+      retryCount: 0,
+      internalStatus: 'completed',
+      visibleStatus: 'taken',
+      lastNotifiedAt: '',
+      completedAt: doneAt.toISOString(),
+    },
+    {
+      id: 'ins-2',
+      ruleId: 'rule-2',
+      medicationId: 'med-2',
+      scheduledAt: `${todayKey}T${timeSoon}`,
+      currentTriggerAt: soon.toISOString(),
+      retryCount: 0,
+      internalStatus: 'waiting',
+      visibleStatus: 'pending',
+      lastNotifiedAt: '',
+      completedAt: '',
+    },
+    {
+      id: 'ins-3',
+      ruleId: 'rule-3',
+      medicationId: 'med-3',
+      scheduledAt: `${todayKey}T${timeLater}`,
+      currentTriggerAt: later.toISOString(),
+      retryCount: 0,
+      internalStatus: 'waiting',
+      visibleStatus: 'pending',
+      lastNotifiedAt: '',
+      completedAt: '',
     },
   ],
   intakeLogs: [
     {
       id: 'log-1',
+      medicationId: 'med-1',
       medId: 'med-1',
-      scheduledAt: `${today}T08:00`,
+      reminderInstanceId: 'ins-1',
+      scheduledAt: `${todayKey}T${timeDone}`,
+      takenAt: doneAt.toISOString(),
       status: 'taken',
-      takenAt: `${today}T08:05`,
       reason: '',
     },
-    {
-      id: 'log-2',
-      medId: 'med-2',
-      scheduledAt: `${today}T08:00`,
-      status: 'missed',
-      takenAt: '',
-      reason: '外出忘记携带',
-    },
   ],
-};
+  reminderQueue: [],
+  userProfile: {
+    name: '张先生',
+    age: 58,
+    gender: '男',
+    diseases: ['高血压', '2型糖尿病'],
+    diagnosisDate: '2018-03-12',
+    note: '请持续监测血压血糖并规律复诊。',
+  },
+  adverseEvents: [],
+  demoMeta: {
+    mode: 'default',
+    generatedAt: '',
+    label: '基础数据',
+  },
+}

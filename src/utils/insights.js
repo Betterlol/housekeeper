@@ -1,33 +1,27 @@
 function toDateKey(date) {
-  return date.toISOString().slice(0, 10);
+  return date.toISOString().slice(0, 10)
 }
 
 function toDateFromKey(key) {
-  return new Date(`${key}T00:00:00`);
+  return new Date(`${key}T00:00:00`)
 }
 
 function addDays(date, days) {
-  const next = new Date(date);
-  next.setDate(next.getDate() + days);
-  return next;
-}
-
-function isMedActiveOnDate(medication, dateKey) {
-  const startOk = !medication.startDate || medication.startDate <= dateKey;
-  const endOk = !medication.endDate || medication.endDate >= dateKey;
-  return startOk && endOk;
+  const next = new Date(date)
+  next.setDate(next.getDate() + days)
+  return next
 }
 
 function toMinutes(time) {
-  const [hour, minute] = time.split(':').map(Number);
-  return hour * 60 + minute;
+  const [hour, minute] = (time || '00:00').split(':').map(Number)
+  return hour * 60 + minute
 }
 
 function formatMonthDay(dateKey) {
-  const date = toDateFromKey(dateKey);
-  const month = `${date.getMonth() + 1}`.padStart(2, '0');
-  const day = `${date.getDate()}`.padStart(2, '0');
-  return `${month}/${day}`;
+  const date = toDateFromKey(dateKey)
+  const month = `${date.getMonth() + 1}`.padStart(2, '0')
+  const day = `${date.getDate()}`.padStart(2, '0')
+  return `${month}/${day}`
 }
 
 function getDefaultProfile() {
@@ -38,258 +32,405 @@ function getDefaultProfile() {
     diseases: ['高血压', '2型糖尿病'],
     diagnosisDate: '待补充',
     note: '当前为基础 mock 数据。',
-  };
+  }
+}
+
+function isMedicationActiveOnDate(medication, dateKey) {
+  const startOk = !medication.startDate || medication.startDate <= dateKey
+  const endOk = !medication.endDate || medication.endDate >= dateKey
+  return startOk && endOk
+}
+
+function isRuleEnabledOnDate(rule, dateKey) {
+  const day = new Date(`${dateKey}T00:00:00`).getDay()
+  const repeatDays = Array.isArray(rule.repeatDays) && rule.repeatDays.length > 0
+    ? rule.repeatDays
+    : [0, 1, 2, 3, 4, 5, 6]
+
+  return repeatDays.includes(day)
+}
+
+function resolveContext(input, logsInput) {
+  if (input && typeof input === 'object' && Array.isArray(input.medications)) {
+    return {
+      medications: input.medications || [],
+      reminderRules: input.reminderRules || [],
+      reminderInstances: input.reminderInstances || [],
+      intakeLogs: input.intakeLogs || [],
+      adverseEvents: input.adverseEvents || [],
+      userProfile: input.userProfile || getDefaultProfile(),
+    }
+  }
+
+  return {
+    medications: Array.isArray(input) ? input : [],
+    reminderRules: [],
+    reminderInstances: [],
+    intakeLogs: Array.isArray(logsInput) ? logsInput : [],
+    adverseEvents: [],
+    userProfile: getDefaultProfile(),
+  }
+}
+
+function normalizeEventStatus(status) {
+  if (status === 'scheduled' || status === 'notified' || status === 'snoozed' || status === 'pending') return 'pending'
+  if (status === 'off' || status === 'closed') return 'off'
+  if (status === 'taken') return 'taken'
+  if (status === 'missed') return 'missed'
+  if (status === 'skipped') return 'skipped'
+  return 'pending'
+}
+
+function collectReminderEvents(context) {
+  const fromInstances = (context.reminderInstances || []).map((instance) => ({
+    medicationId: instance.medicationId || instance.medId || '',
+    reminderInstanceId: instance.id,
+    scheduledAt: instance.scheduledAt,
+    status: normalizeEventStatus(instance.visibleStatus || instance.status || instance.reminderStatus),
+    reason: '',
+  }))
+
+  const existingInstanceIdSet = new Set(fromInstances.map((item) => item.reminderInstanceId))
+
+  const fromLogs = (context.intakeLogs || []).map((log) => ({
+    medicationId: log.medicationId || log.medId || '',
+    reminderInstanceId: log.reminderInstanceId || '',
+    scheduledAt: log.scheduledAt,
+    status: normalizeEventStatus(log.status || log.reminderStatus),
+    reason: log.reason || '',
+  }))
+
+  const merged = [...fromInstances]
+
+  fromLogs.forEach((log) => {
+    if (log.reminderInstanceId && existingInstanceIdSet.has(log.reminderInstanceId)) {
+      const targetIndex = merged.findIndex((item) => item.reminderInstanceId === log.reminderInstanceId)
+      if (targetIndex >= 0) {
+        merged[targetIndex] = {
+          ...merged[targetIndex],
+          status: log.status,
+          reason: log.reason,
+        }
+      }
+      return
+    }
+
+    merged.push(log)
+  })
+
+  return merged.filter((item) => item.scheduledAt)
+}
+
+function expectedCountByRules(context, dateKey) {
+  const medications = context.medications || []
+
+  return (context.reminderRules || []).reduce((sum, rule) => {
+    if (!rule.enabled) return sum
+    const medication = medications.find((item) => item.id === rule.medicationId)
+    if (!medication) return sum
+    if (!isMedicationActiveOnDate(medication, dateKey)) return sum
+    if (!isRuleEnabledOnDate(rule, dateKey)) return sum
+    return sum + 1
+  }, 0)
+}
+
+function getWeekDateKeys() {
+  const endDate = new Date()
+  const startDate = addDays(endDate, -6)
+
+  return Array.from({ length: 7 }).map((_, index) => toDateKey(addDays(startDate, index)))
+}
+
+function getDailyStats(context, dateKey, events) {
+  const dayEvents = events.filter((item) => (item.scheduledAt || '').startsWith(dateKey))
+
+  const expectedFromEvents = dayEvents.filter((item) => item.status !== 'off').length
+  const expectedFromRules = expectedCountByRules(context, dateKey)
+  const expected = Math.max(expectedFromEvents, expectedFromRules)
+
+  const taken = dayEvents.filter((item) => item.status === 'taken').length
+  const missed = dayEvents.filter((item) => item.status === 'missed').length
+  const skipped = dayEvents.filter((item) => item.status === 'skipped').length
+  const pending = Math.max(0, expected - taken - missed - skipped)
+  const adherence = expected === 0 ? 100 : Math.round((taken / expected) * 100)
+
+  return {
+    dateKey,
+    expected,
+    taken,
+    missed,
+    skipped,
+    pending,
+    adherence,
+  }
+}
+
+function resolveMedicationFrequency(medication, rulesForMedication = []) {
+  if (rulesForMedication.length > 0) {
+    const dailyCount = rulesForMedication.reduce((sum, rule) => {
+      const repeatDays = Array.isArray(rule.repeatDays) && rule.repeatDays.length > 0
+        ? rule.repeatDays.length
+        : 7
+
+      return sum + repeatDays / 7
+    }, 0)
+
+    return dailyCount > 0 ? dailyCount : 1
+  }
+
+  if (Number(medication.frequencyPerDay) > 0) return Number(medication.frequencyPerDay)
+  if (Array.isArray(medication.times) && medication.times.length > 0) return medication.times.length
+  return 1
 }
 
 export function getGreeting() {
-  const hour = new Date().getHours();
-  if (hour < 6) return '凌晨好';
-  if (hour < 12) return '上午好';
-  if (hour < 18) return '下午好';
-  return '晚上好';
+  const hour = new Date().getHours()
+  if (hour < 6) return '凌晨好'
+  if (hour < 12) return '上午好'
+  if (hour < 18) return '下午好'
+  return '晚上好'
 }
 
-export function buildTodaySchedule(medications, logs) {
-  const today = toDateKey(new Date());
-  const now = new Date();
-  const nowMinutes = now.getHours() * 60 + now.getMinutes();
+export function buildTodaySchedule(input, logsInput) {
+  const context = resolveContext(input, logsInput)
+  const todayKey = toDateKey(new Date())
+  const events = collectReminderEvents(context)
 
-  const rows = medications
-    .filter((medication) => isMedActiveOnDate(medication, today))
-    .flatMap((medication) =>
-      medication.times.map((time) => {
-        const scheduledAt = `${today}T${time}`;
-        const matchedLog = logs.find(
-          (log) => log.medId === medication.id && log.scheduledAt === scheduledAt
-        );
+  const rows = (context.reminderRules || []).map((rule) => {
+    const medication = (context.medications || []).find((item) => item.id === rule.medicationId)
+    if (!medication) return null
+    if (!isMedicationActiveOnDate(medication, todayKey)) return null
+    if (!isRuleEnabledOnDate(rule, todayKey)) return null
 
-        let status = 'pending';
-        if (matchedLog?.status === 'taken') {
-          status = 'taken';
-        } else if (matchedLog?.status === 'missed') {
-          status = 'missed';
-        } else {
-          const diff = nowMinutes - toMinutes(time);
-          status = diff >= 120 ? 'missed' : 'pending';
-        }
+    const scheduledAt = `${todayKey}T${rule.time}`
 
-        return {
-          id: `${medication.id}-${time}`,
-          medId: medication.id,
-          drugName: medication.drugName,
-          doseText: `${medication.dose}${medication.unit}`,
-          withMeal: medication.withMeal,
-          time,
-          scheduledAt,
-          status,
-          takenAt: matchedLog?.takenAt || '',
-        };
-      })
+    const event = events.find(
+      (item) => item.medicationId === medication.id && item.scheduledAt === scheduledAt
     )
-    .sort((a, b) => (a.time > b.time ? 1 : -1));
 
-  return rows;
+    const status = rule.enabled ? (event?.status || 'pending') : 'off'
+
+    return {
+      id: `${rule.id}-${todayKey}`,
+      medId: medication.id,
+      drugName: medication.drugName,
+      doseText: `${medication.dose}${medication.unit}`,
+      withMeal: medication.withMeal,
+      time: rule.time,
+      scheduledAt,
+      status,
+      takenAt: event?.status === 'taken' ? (event.takenAt || '') : '',
+    }
+  }).filter(Boolean)
+
+  return rows.sort((a, b) => (a.time > b.time ? 1 : -1))
 }
 
-export function getRecentLogs(logs, days = 7) {
-  const endDate = new Date();
-  const startDate = addDays(endDate, -(days - 1));
-  const startKey = toDateKey(startDate);
-  const endKey = toDateKey(endDate);
+export function getRecentLogs(input, logsInput, days = 7) {
+  const context = resolveContext(input, logsInput)
+  const events = collectReminderEvents(context)
 
-  return logs.filter((log) => {
-    const dateKey = log.scheduledAt.slice(0, 10);
-    return dateKey >= startKey && dateKey <= endKey;
-  });
+  const endDate = new Date()
+  const startDate = addDays(endDate, -(days - 1))
+  const startKey = toDateKey(startDate)
+  const endKey = toDateKey(endDate)
+
+  return events.filter((event) => {
+    const dateKey = (event.scheduledAt || '').slice(0, 10)
+    return dateKey >= startKey && dateKey <= endKey
+  })
 }
 
-export function calculateSevenDayAdherence(medications, logs) {
-  const endDate = new Date();
-  const startDate = addDays(endDate, -6);
+export function calculateSevenDayAdherence(input, logsInput) {
+  const context = resolveContext(input, logsInput)
+  const events = collectReminderEvents(context)
+  const dayKeys = getWeekDateKeys()
 
-  let expected = 0;
-  for (let i = 0; i < 7; i += 1) {
-    const day = addDays(startDate, i);
-    const dayKey = toDateKey(day);
+  const totals = dayKeys.reduce((acc, dateKey) => {
+    const stat = getDailyStats(context, dateKey, events)
+    return {
+      expected: acc.expected + stat.expected,
+      takenCount: acc.takenCount + stat.taken,
+      missedCount: acc.missedCount + stat.missed,
+      skippedCount: acc.skippedCount + stat.skipped,
+      pendingCount: acc.pendingCount + stat.pending,
+    }
+  }, {
+    expected: 0,
+    takenCount: 0,
+    missedCount: 0,
+    skippedCount: 0,
+    pendingCount: 0,
+  })
 
-    medications.forEach((medication) => {
-      if (!isMedActiveOnDate(medication, dayKey)) return;
-      expected += medication.times.length;
-    });
-  }
-
-  const recentLogs = getRecentLogs(logs, 7);
-  const takenCount = recentLogs.filter((log) => log.status === 'taken').length;
-  const missedCount = recentLogs.filter((log) => log.status === 'missed').length;
-  const resolvedExpected = Math.max(expected, takenCount + missedCount);
-
-  const adherence = resolvedExpected === 0 ? 100 : Math.round((takenCount / resolvedExpected) * 100);
+  const adherence = totals.expected === 0
+    ? 100
+    : Math.round((totals.takenCount / totals.expected) * 100)
 
   return {
-    expected: resolvedExpected,
-    takenCount,
-    missedCount: Math.max(resolvedExpected - takenCount, missedCount),
+    expected: totals.expected,
+    takenCount: totals.takenCount,
+    missedCount: totals.missedCount,
+    skippedCount: totals.skippedCount,
+    pendingCount: totals.pendingCount,
     adherence,
-  };
+  }
 }
 
-export function getSevenDayTrendData(medications, logs) {
-  const endDate = new Date();
-  const startDate = addDays(endDate, -6);
+export function getSevenDayTrendData(input, logsInput) {
+  const context = resolveContext(input, logsInput)
+  const events = collectReminderEvents(context)
 
-  const rows = [];
-  for (let i = 0; i < 7; i += 1) {
-    const day = addDays(startDate, i);
-    const dateKey = toDateKey(day);
+  return getWeekDateKeys().map((dateKey) => {
+    const stat = getDailyStats(context, dateKey, events)
 
-    let expected = 0;
-    medications.forEach((medication) => {
-      if (!isMedActiveOnDate(medication, dateKey)) return;
-      expected += medication.times.length;
-    });
-
-    const dayLogs = logs.filter((log) => log.scheduledAt.slice(0, 10) === dateKey);
-    const taken = dayLogs.filter((log) => log.status === 'taken').length;
-    const missedFromLogs = dayLogs.filter((log) => log.status === 'missed').length;
-    const missed = Math.max(missedFromLogs, Math.max(0, expected - taken));
-    const adherence = expected === 0 ? 100 : Math.round((taken / expected) * 100);
-
-    rows.push({
+    return {
       dateKey,
       label: formatMonthDay(dateKey),
-      expected,
-      taken,
-      missed,
-      adherence,
-    });
-  }
-
-  return rows;
+      expected: stat.expected,
+      taken: stat.taken,
+      missed: stat.missed,
+      adherence: stat.adherence,
+    }
+  })
 }
 
-export function getLateNightMissedCount(logs) {
-  const recentLogs = getRecentLogs(logs, 7);
-  return recentLogs.filter((log) => {
-    if (log.status !== 'missed') return false;
-    const time = log.scheduledAt.slice(11, 16);
-    return toMinutes(time) >= 20 * 60;
-  }).length;
+export function getLateNightMissedCount(input, logsInput) {
+  const context = resolveContext(input, logsInput)
+  const events = collectReminderEvents(context)
+
+  return events.filter((event) => {
+    if (event.status !== 'missed') return false
+    const time = (event.scheduledAt || '').slice(11, 16)
+    return toMinutes(time) >= 20 * 60
+  }).length
 }
 
-export function getAiSuggestion(medications, logs) {
-  const { adherence, missedCount } = calculateSevenDayAdherence(medications, logs);
-  const lateNightMissed = getLateNightMissedCount(logs);
+export function getAiSuggestion(input, logsInput) {
+  const summary = calculateSevenDayAdherence(input, logsInput)
+  const lateNightMissed = getLateNightMissedCount(input, logsInput)
 
   if (lateNightMissed >= 2) {
-    return '最近7天晚间漏服较多，建议开启睡前提醒并将药盒放在床头可见位置。';
+    return '最近7天晚间漏服较多，建议开启睡前提醒并将药盒放在床头可见位置。'
   }
 
-  if (adherence < 80) {
-    return '近期总体依从率偏低，建议固定早晚两个闹钟并关联家属提醒。';
+  if (summary.adherence < 80) {
+    return '近期总体依从率偏低，建议固定早晚两个闹钟并关联家属提醒。'
   }
 
-  if (missedCount > 0) {
-    return '近期存在偶发漏服，建议在早餐后立即打卡，形成固定行为习惯。';
+  if (summary.missedCount > 0) {
+    return '近期存在偶发漏服，建议在早餐后立即打卡，形成固定行为习惯。'
   }
 
-  return '过去7天用药表现稳定，建议继续保持，并在复诊前导出用药记录。';
+  return '过去7天用药表现稳定，建议继续保持，并在复诊前导出用药记录。'
 }
 
-export function getUpcomingRefill(medications) {
+export function getUpcomingRefill(input, maybeRules = []) {
+  const context = Array.isArray(input)
+    ? { medications: input, reminderRules: maybeRules }
+    : resolveContext(input)
+
+  const medications = context.medications || []
+  const reminderRules = context.reminderRules || []
+
   const enriched = medications
     .map((medication) => {
-      const dailyUse = Number(medication.dose) * Number(medication.frequencyPerDay || medication.times.length || 1);
-      const safeDailyUse = dailyUse > 0 ? dailyUse : 1;
-      const remainingDays = Math.max(0, Math.floor(Number(medication.stockQty || 0) / safeDailyUse));
+      const rulesForMedication = reminderRules.filter((rule) => rule.medicationId === medication.id && rule.enabled)
+      const dailyUse = Number(medication.dose || 1) * resolveMedicationFrequency(medication, rulesForMedication)
+      const safeDailyUse = dailyUse > 0 ? dailyUse : 1
+      const remainingDays = Math.max(0, Math.floor(Number(medication.stockQty || 0) / safeDailyUse))
 
       return {
         ...medication,
+        dailyUse: Number(safeDailyUse.toFixed(2)),
         remainingDays,
-      };
+      }
     })
-    .sort((a, b) => a.remainingDays - b.remainingDays);
+    .sort((a, b) => a.remainingDays - b.remainingDays)
 
-  return enriched[0] || null;
+  return enriched[0] || null
 }
 
 export function getMockHealthMetrics(adherence) {
-  const today = new Date();
-  const daySeed = Number(toDateKey(today).replace(/-/g, '').slice(-2));
-  const systolic = 118 + (daySeed % 7);
-  const diastolic = 73 + (daySeed % 6);
-  const glucose = (5.2 + ((daySeed % 8) * 0.12)).toFixed(1);
+  const today = new Date()
+  const daySeed = Number(toDateKey(today).replace(/-/g, '').slice(-2))
+  const systolic = 118 + (daySeed % 7)
+  const diastolic = 73 + (daySeed % 6)
+  const glucose = (5.2 + ((daySeed % 8) * 0.12)).toFixed(1)
 
   return {
     bloodPressure: `${systolic}/${diastolic}`,
     bloodSugar: `${glucose} mmol/L`,
     adherence: `${adherence}%`,
-  };
+  }
 }
 
-export function getConsultSummary(medications, logs) {
-  const sevenDay = calculateSevenDayAdherence(medications, logs);
-  const recentLogs = getRecentLogs(logs, 7);
+export function getConsultSummary(input, logsInput) {
+  const context = resolveContext(input, logsInput)
+  const sevenDay = calculateSevenDayAdherence(context)
+  const recentEvents = getRecentLogs(context, undefined, 7)
 
-  const adverseKeywords = ['头晕', '恶心', '不适', '皮疹', '过敏', '心慌', '乏力'];
-  const adverseLogs = recentLogs.filter((log) =>
-    adverseKeywords.some((keyword) => (log.reason || '').includes(keyword))
-  );
+  const adverseFromEvents = recentEvents
+    .filter((event) => Boolean(event.reason))
+    .map((event) => `${event.scheduledAt.slice(0, 10)} ${event.reason}`)
 
-  const latestMissedDate = recentLogs
-    .filter((log) => log.status === 'missed')
-    .map((log) => log.scheduledAt.slice(0, 10))
+  const adverseFromRecords = (context.adverseEvents || [])
+    .map((event) => `${(event.eventTime || '').slice(0, 10)} ${event.symptom}`)
+    .filter((line) => line.trim().length > 0)
+
+  const adverseList = [...adverseFromRecords, ...adverseFromEvents]
+
+  const latestMissedDate = recentEvents
+    .filter((event) => event.status === 'missed')
+    .map((event) => event.scheduledAt.slice(0, 10))
     .sort()
-    .pop();
+    .pop()
 
-  const nextVisit = addDays(new Date(), sevenDay.adherence < 80 ? 5 : 14);
+  const nextVisit = addDays(new Date(), sevenDay.adherence < 80 ? 5 : 14)
 
   const summaryText =
     sevenDay.adherence < 80
       ? '近7天依从率偏低，建议尽快复诊评估当前方案，重点沟通晚间漏服场景与提醒策略。'
-      : '近7天用药整体平稳，建议按计划复诊并携带本报告，便于医生快速评估疗效。';
+      : '近7天用药整体平稳，建议按计划复诊并携带本报告，便于医生快速评估疗效。'
 
   return {
     ...sevenDay,
-    adverseCount: adverseLogs.length,
-    adverseText:
-      adverseLogs.length > 0
-        ? adverseLogs.map((log) => `${log.scheduledAt.slice(0, 10)} ${log.reason}`).join('；')
-        : '近7天未记录明确不良反应。',
+    adverseCount: adverseList.length,
+    adverseText: adverseList.length > 0 ? adverseList.join('；') : '近7天未记录明确不良反应。',
     latestMissedDate: latestMissedDate || '无',
     nextVisitDate: toDateKey(nextVisit),
     aiSummary: summaryText,
-  };
+  }
 }
 
 export function getDoctorReadableReport(store) {
-  const medications = store.medications || [];
-  const logs = store.intakeLogs || [];
-  const summary = getConsultSummary(medications, logs);
-  const refill = getUpcomingRefill(medications);
-  const lateNightMissed = getLateNightMissedCount(logs);
+  const context = resolveContext(store)
+  const summary = getConsultSummary(context)
+  const refill = getUpcomingRefill(context)
+  const lateNightMissed = getLateNightMissedCount(context)
 
-  const profile = store.userProfile || getDefaultProfile();
+  const profile = context.userProfile || getDefaultProfile()
 
-  let missedRisk = '低风险';
-  let missedRiskDesc = '近7日漏服风险可控，继续维持现有提醒策略。';
+  let missedRisk = '低风险'
+  let missedRiskDesc = '近7日漏服风险可控，继续维持现有提醒策略。'
 
   if (summary.adherence < 80 || lateNightMissed >= 2) {
-    missedRisk = '中高风险';
-    missedRiskDesc = '漏服主要集中在晚间场景，建议与患者讨论提醒方式和家属协同监督。';
+    missedRisk = '中高风险'
+    missedRiskDesc = '漏服主要集中在晚间场景，建议与患者讨论提醒方式和家属协同监督。'
   } else if (summary.missedCount > 0 || summary.adherence < 90) {
-    missedRisk = '中等风险';
-    missedRiskDesc = '存在零星漏服，建议复盘具体诱因并优化日常服药触发点。';
+    missedRisk = '中等风险'
+    missedRiskDesc = '存在零星漏服，建议复盘具体诱因并优化日常服药触发点。'
   }
 
   const refillAdvice = refill
     ? `${refill.drugName} 预计剩余 ${refill.remainingDays} 天，建议在 3-5 天内完成复诊续方，避免断药。`
-    : '当前暂无明确续方风险。';
+    : '当前暂无明确续方风险。'
 
   const communicationFocus = [
     '确认晚间服药执行障碍（外出、遗忘、睡前作息不固定）并制定替代提醒方案。',
     '复核现有血压/血糖控制目标，结合依从率变化评估是否需要调整剂量。',
     '明确续方时间节点与购药计划，减少重复购药与断药并存的风险。',
-  ];
+  ]
 
   return {
     profile,
@@ -300,12 +441,12 @@ export function getDoctorReadableReport(store) {
     refillAdvice,
     communicationFocus,
     summary,
-  };
+  }
 }
 
 export function buildConsultCopyText(store) {
-  const report = getDoctorReadableReport(store);
-  const diseases = (report.profile.diseases || []).join('、');
+  const report = getDoctorReadableReport(store)
+  const diseases = (report.profile.diseases || []).join('、')
 
   return [
     '【AI复诊摘要】',
@@ -319,59 +460,48 @@ export function buildConsultCopyText(store) {
     `1. ${report.communicationFocus[0]}`,
     `2. ${report.communicationFocus[1]}`,
     `3. ${report.communicationFocus[2]}`,
-  ].join('\n');
+  ].join('\n')
 }
 
-export function getPurchaseInsights(medications) {
-  return medications.map((medication) => {
-    const frequency = Number(medication.frequencyPerDay || medication.times.length || 1);
-    const dailyUse = Math.max(1, Number(medication.dose || 1) * frequency);
-    const stock = Number(medication.stockQty || 0);
-    const remainingDays = Math.floor(stock / dailyUse);
+export function getPurchaseInsights(input, maybeRules = []) {
+  const context = Array.isArray(input)
+    ? { medications: input, reminderRules: maybeRules }
+    : resolveContext(input)
 
-    const lowStock = remainingDays <= 7;
-    const duplicateRisk = remainingDays >= 20;
+  const medications = context.medications || []
+  const reminderRules = context.reminderRules || []
+
+  return medications.map((medication) => {
+    const rulesForMedication = reminderRules.filter((rule) => rule.medicationId === medication.id && rule.enabled)
+    const frequency = resolveMedicationFrequency(medication, rulesForMedication)
+    const dailyUse = Math.max(1, Number(medication.dose || 1) * frequency)
+    const stock = Number(medication.stockQty || 0)
+    const remainingDays = Math.floor(stock / dailyUse)
+
+    const lowStock = remainingDays <= 7
+    const duplicateRisk = remainingDays >= 20
 
     return {
       ...medication,
-      dailyUse,
+      dailyUse: Number(dailyUse.toFixed(2)),
       remainingDays,
       lowStock,
       duplicateRisk,
-      riskMessage: duplicateRisk
-        ? '当前库存仍可覆盖较长周期，重复购药风险较高。'
-        : '库存消耗节奏正常，可按需补货。',
-    };
-  });
-}
-
-export function updateMedicationStockList(medications, medId, addQty) {
-  return medications.map((medication) =>
-    medication.id === medId
-      ? {
-          ...medication,
-          stockQty: Number(medication.stockQty || 0) + addQty,
-        }
-      : medication
-  );
+      riskMessage: lowStock
+        ? `${medication.drugName} 预计 ${Math.max(remainingDays, 0)} 天后用完，建议优先补货并发起续方。`
+        : duplicateRisk
+          ? `${medication.drugName} 当前库存可用 ${remainingDays} 天，暂不建议重复购药。`
+          : `${medication.drugName} 库存预计可用 ${remainingDays} 天，当前购药风险较低。`,
+    }
+  })
 }
 
 export function getWeekWindowLabel() {
-  const end = new Date();
-  const start = addDays(end, -6);
-  const monthDay = (date) => {
-    const month = `${date.getMonth() + 1}`.padStart(2, '0');
-    const day = `${date.getDate()}`.padStart(2, '0');
-    return `${month}-${day}`;
-  };
+  const end = new Date()
+  const start = addDays(end, -6)
 
-  return `${monthDay(start)} ~ ${monthDay(end)}`;
-}
+  const startText = `${String(start.getMonth() + 1).padStart(2, '0')}-${String(start.getDate()).padStart(2, '0')}`
+  const endText = `${String(end.getMonth() + 1).padStart(2, '0')}-${String(end.getDate()).padStart(2, '0')}`
 
-export function isDueSoonDate(dateKey, days = 7) {
-  if (!dateKey) return false;
-  const target = toDateFromKey(dateKey);
-  const today = toDateFromKey(toDateKey(new Date()));
-  const diff = Math.floor((target - today) / (1000 * 60 * 60 * 24));
-  return diff >= 0 && diff <= days;
+  return `${startText} ~ ${endText}`
 }

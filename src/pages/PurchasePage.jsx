@@ -1,26 +1,25 @@
-import { useState } from 'react';
-import MedicalIcon from '../components/MedicalIcon';
-import { getPurchaseInsights } from '../utils/insights';
-import { getMedications, updateMedicationStock } from '../utils/storage';
+import { useState } from 'react'
+import MedicalIcon from '../components/MedicalIcon'
+import useStoreSnapshot from '../hooks/useStoreSnapshot'
+import { getPurchaseInsights } from '../utils/insights'
+import { updateMedicationStock } from '../utils/storage'
 
 export default function PurchasePage() {
-  const [version, setVersion] = useState(0);
-  const [message, setMessage] = useState('');
+  const [message, setMessage] = useState('')
 
-  const medications = getMedications();
-  const purchaseInsights = getPurchaseInsights(medications);
+  const store = useStoreSnapshot()
+  const purchaseInsights = getPurchaseInsights(store)
 
-  const lowStockCount = purchaseInsights.filter((item) => item.lowStock).length;
-  const duplicateRiskCount = purchaseInsights.filter((item) => item.duplicateRisk).length;
+  const lowStockCount = purchaseInsights.filter((item) => item.lowStock).length
+  const duplicateRiskCount = purchaseInsights.filter((item) => item.duplicateRisk).length
 
   const handleMockPurchase = (item) => {
-    updateMedicationStock(item.id, 30);
-    setMessage(`${item.drugName} 已模拟购药 +30${item.stockUnit}，库存已更新。`);
-    setVersion((prev) => prev + 1);
-  };
+    updateMedicationStock(item.id, 30)
+    setMessage(`${item.drugName} 已模拟购药 +30${item.stockUnit}，库存已更新。`)
+  }
 
   return (
-    <section key={version} className="space-y-4">
+    <section className="space-y-4">
       <article className="rounded-3xl bg-gradient-to-br from-teal-700 via-emerald-700 to-cyan-700 p-5 text-white shadow-[0_22px_44px_-20px_rgba(13,148,136,0.85)]">
         <p className="text-xs text-teal-100">智能购药助手</p>
         <h1 className="mt-1 text-xl font-semibold">购药预警中心</h1>
@@ -87,5 +86,5 @@ export default function PurchasePage() {
         ))}
       </section>
     </section>
-  );
+  )
 }

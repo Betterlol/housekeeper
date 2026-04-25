@@ -1,5 +1,6 @@
-import { useMemo, useState } from 'react';
-import MedicalIcon from '../components/MedicalIcon';
+import { useMemo, useState } from 'react'
+import MedicalIcon from '../components/MedicalIcon'
+import useStoreSnapshot from '../hooks/useStoreSnapshot'
 import {
   buildConsultCopyText,
   getConsultSummary,
@@ -7,50 +8,47 @@ import {
   getLateNightMissedCount,
   getSevenDayTrendData,
   getWeekWindowLabel,
-} from '../utils/insights';
-import { getStore } from '../utils/storage';
+} from '../utils/insights'
 
 function copyByExecCommand(text) {
-  const input = document.createElement('textarea');
-  input.value = text;
-  input.setAttribute('readonly', 'true');
-  input.style.position = 'fixed';
-  input.style.left = '-9999px';
-  document.body.appendChild(input);
-  input.select();
-  const result = document.execCommand('copy');
-  document.body.removeChild(input);
-  return result;
+  const input = document.createElement('textarea')
+  input.value = text
+  input.setAttribute('readonly', 'true')
+  input.style.position = 'fixed'
+  input.style.left = '-9999px'
+  document.body.appendChild(input)
+  input.select()
+  const result = document.execCommand('copy')
+  document.body.removeChild(input)
+  return result
 }
 
 export default function ConsultPage() {
-  const [copyStatus, setCopyStatus] = useState('');
+  const [copyStatus, setCopyStatus] = useState('')
 
-  const store = getStore();
-  const medications = store.medications || [];
-  const logs = store.intakeLogs || [];
+  const store = useStoreSnapshot({ ensureToday: true })
 
-  const summary = getConsultSummary(medications, logs);
-  const lateNightMissed = getLateNightMissedCount(logs);
-  const trend = getSevenDayTrendData(medications, logs);
-  const doctorReport = useMemo(() => getDoctorReadableReport(store), [store]);
+  const summary = getConsultSummary(store)
+  const lateNightMissed = getLateNightMissedCount(store)
+  const trend = getSevenDayTrendData(store)
+  const doctorReport = useMemo(() => getDoctorReadableReport(store), [store])
 
   const handleCopySummary = async () => {
-    const text = buildConsultCopyText(store);
+    const text = buildConsultCopyText(store)
 
     try {
       if (navigator?.clipboard?.writeText) {
-        await navigator.clipboard.writeText(text);
+        await navigator.clipboard.writeText(text)
       } else {
-        const result = copyByExecCommand(text);
-        if (!result) throw new Error('fallback copy failed');
+        const result = copyByExecCommand(text)
+        if (!result) throw new Error('fallback copy failed')
       }
 
-      setCopyStatus('复诊摘要已复制到剪贴板。');
+      setCopyStatus('复诊摘要已复制到剪贴板。')
     } catch (error) {
-      setCopyStatus('当前浏览器不支持自动复制，请手动复制摘要内容。');
+      setCopyStatus('当前浏览器不支持自动复制，请手动复制摘要内容。')
     }
-  };
+  }
 
   return (
     <section className="space-y-4">
@@ -90,8 +88,8 @@ export default function ConsultPage() {
 
         <div className="space-y-3">
           {trend.map((day) => {
-            const takenWidth = day.expected === 0 ? 0 : Math.round((day.taken / day.expected) * 100);
-            const missedWidth = day.expected === 0 ? 0 : Math.round((day.missed / day.expected) * 100);
+            const takenWidth = day.expected === 0 ? 0 : Math.round((day.taken / day.expected) * 100)
+            const missedWidth = day.expected === 0 ? 0 : Math.round((day.missed / day.expected) * 100)
 
             return (
               <div key={day.dateKey} className="rounded-xl bg-slate-50 p-3">
@@ -114,7 +112,7 @@ export default function ConsultPage() {
                   <div className="h-1.5 rounded-full bg-rose-500" style={{ width: `${missedWidth}%` }} />
                 </div>
               </div>
-            );
+            )
           })}
         </div>
       </article>
@@ -177,5 +175,5 @@ export default function ConsultPage() {
         </div>
       </article>
     </section>
-  );
+  )
 }
