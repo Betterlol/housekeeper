@@ -1,5 +1,4 @@
 import { useMemo, useState } from 'react'
-import PageHeader from '../components/PageHeader'
 import useStoreSnapshot from '../hooks/useStoreSnapshot'
 import {
   addMedication,
@@ -26,6 +25,36 @@ export default function PlanPage() {
 
   const [form, setForm] = useState(initialForm)
   const [editingId, setEditingId] = useState('')
+  const [editorOpen, setEditorOpen] = useState(false)
+
+  const openCreate = () => {
+    setEditingId('')
+    setForm(initialForm)
+    setEditorOpen(true)
+  }
+
+  const openEdit = (medication) => {
+    setEditingId(medication.id)
+    setForm({
+      drugName: medication.drugName || '',
+      spec: medication.spec || '',
+      dose: medication.dose || 1,
+      unit: medication.unit || '片',
+      withMeal: medication.withMeal || '饭后',
+      stockQty: medication.stockQty || 0,
+      stockUnit: medication.stockUnit || '片',
+      startDate: medication.startDate || initialForm.startDate,
+      endDate: medication.endDate || '',
+      sourceLabel: medication.sourceLabel || '手动录入',
+    })
+    setEditorOpen(true)
+  }
+
+  const closeEditor = () => {
+    setEditorOpen(false)
+    setEditingId('')
+    setForm(initialForm)
+  }
 
   const handleChange = (event) => {
     const { name, value } = event.target
@@ -34,7 +63,6 @@ export default function PlanPage() {
 
   const handleSubmit = (event) => {
     event.preventDefault()
-
     if (!form.drugName.trim()) return
 
     const payload = {
@@ -56,152 +84,33 @@ export default function PlanPage() {
       addMedication(payload)
     }
 
-    setForm(initialForm)
-    setEditingId('')
-  }
-
-  const handleEdit = (medication) => {
-    setEditingId(medication.id)
-    setForm({
-      drugName: medication.drugName || '',
-      spec: medication.spec || '',
-      dose: medication.dose || 1,
-      unit: medication.unit || '片',
-      withMeal: medication.withMeal || '饭后',
-      stockQty: medication.stockQty || 0,
-      stockUnit: medication.stockUnit || '片',
-      startDate: medication.startDate || initialForm.startDate,
-      endDate: medication.endDate || '',
-      sourceLabel: medication.sourceLabel || '手动录入',
-    })
-  }
-
-  const handleDelete = (id) => {
-    deleteMedication(id)
-    if (editingId === id) {
-      setEditingId('')
-      setForm(initialForm)
-    }
+    closeEditor()
   }
 
   return (
     <section className="space-y-4">
-      <PageHeader title="用药计划" subtitle="仅管理药品属性，不在此页面设置闹钟" />
-
-      <form onSubmit={handleSubmit} className="space-y-3 rounded-2xl bg-white p-4 shadow-card">
-        <input
-          name="drugName"
-          value={form.drugName}
-          onChange={handleChange}
-          placeholder="药品名称（必填）"
-          className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-medical-600"
-        />
-
-        <input
-          name="spec"
-          value={form.spec}
-          onChange={handleChange}
-          placeholder="规格，如 500mg*20片"
-          className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-medical-600"
-        />
-
-        <div className="grid grid-cols-2 gap-2">
-          <input
-            name="dose"
-            type="number"
-            min="0"
-            step="0.5"
-            value={form.dose}
-            onChange={handleChange}
-            placeholder="每次剂量"
-            className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-medical-600"
-          />
-          <input
-            name="unit"
-            value={form.unit}
-            onChange={handleChange}
-            placeholder="单位"
-            className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-medical-600"
-          />
+      <header className="flex items-center justify-between">
+        <div>
+          <h1 className="text-xl font-bold text-slate-900">用药计划</h1>
+          <p className="mt-1 text-sm text-slate-500">仅管理药品属性，不在此页面设置闹钟</p>
         </div>
 
-        <div className="grid grid-cols-2 gap-2">
-          <input
-            name="withMeal"
-            value={form.withMeal}
-            onChange={handleChange}
-            placeholder="饭前/饭后"
-            className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-medical-600"
-          />
-          <select
-            name="sourceLabel"
-            value={form.sourceLabel}
-            onChange={handleChange}
-            className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-medical-600"
-          >
-            <option value="手动录入">手动录入</option>
-            <option value="处方导入">处方导入</option>
-          </select>
-        </div>
+        <button
+          type="button"
+          onClick={openCreate}
+          className="rounded-xl bg-medical-600 px-3 py-2 text-xs font-medium text-white"
+        >
+          新增药品
+        </button>
+      </header>
 
-        <div className="grid grid-cols-2 gap-2">
-          <input
-            name="stockQty"
-            type="number"
-            min="0"
-            value={form.stockQty}
-            onChange={handleChange}
-            placeholder="当前库存"
-            className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-medical-600"
-          />
-          <input
-            name="stockUnit"
-            value={form.stockUnit}
-            onChange={handleChange}
-            placeholder="库存单位"
-            className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-medical-600"
-          />
-        </div>
+      <section className="space-y-3">
+        {medications.length === 0 ? (
+          <article className="rounded-2xl bg-white p-4 text-sm text-slate-500 shadow-card">
+            暂无药品，请点击右上角“新增药品”。
+          </article>
+        ) : null}
 
-        <div className="grid grid-cols-2 gap-2">
-          <input
-            name="startDate"
-            type="date"
-            value={form.startDate}
-            onChange={handleChange}
-            className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-medical-600"
-          />
-          <input
-            name="endDate"
-            type="date"
-            value={form.endDate}
-            onChange={handleChange}
-            className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-medical-600"
-          />
-        </div>
-
-        <div className="grid grid-cols-2 gap-2">
-          <button
-            type="submit"
-            className="w-full rounded-xl bg-medical-600 px-3 py-2 text-sm font-medium text-white transition hover:bg-medical-700"
-          >
-            {editingId ? '保存药品修改' : '新增药品'}
-          </button>
-
-          <button
-            type="button"
-            onClick={() => {
-              setEditingId('')
-              setForm(initialForm)
-            }}
-            className="w-full rounded-xl bg-slate-100 px-3 py-2 text-sm font-medium text-slate-700"
-          >
-            清空
-          </button>
-        </div>
-      </form>
-
-      <div className="space-y-3">
         {medications.map((item) => (
           <article key={item.id} className="rounded-2xl bg-white p-4 shadow-card">
             <div className="flex items-start justify-between gap-2">
@@ -225,14 +134,14 @@ export default function PlanPage() {
               <div className="flex gap-2">
                 <button
                   type="button"
-                  onClick={() => handleEdit(item)}
+                  onClick={() => openEdit(item)}
                   className="rounded-lg border border-medical-200 px-2 py-1 text-xs text-medical-700"
                 >
                   编辑
                 </button>
                 <button
                   type="button"
-                  onClick={() => handleDelete(item.id)}
+                  onClick={() => deleteMedication(item.id)}
                   className="rounded-lg border border-rose-200 px-2 py-1 text-xs text-rose-600"
                 >
                   删除
@@ -241,7 +150,127 @@ export default function PlanPage() {
             </div>
           </article>
         ))}
-      </div>
+      </section>
+
+      {editorOpen ? (
+        <div className="fixed inset-0 z-40 flex items-end justify-center bg-slate-900/45 p-3 backdrop-blur-sm">
+          <form
+            onSubmit={handleSubmit}
+            className="max-h-[88vh] w-full max-w-md overflow-y-auto rounded-3xl bg-white p-4 shadow-2xl"
+          >
+            <div className="mb-3 flex items-center justify-between">
+              <p className="text-base font-semibold text-slate-900">{editingId ? '编辑药品' : '新增药品'}</p>
+              <button
+                type="button"
+                onClick={closeEditor}
+                className="rounded-lg bg-slate-100 px-2 py-1 text-xs text-slate-700"
+              >
+                关闭
+              </button>
+            </div>
+
+            <div className="space-y-3">
+              <input
+                name="drugName"
+                value={form.drugName}
+                onChange={handleChange}
+                placeholder="药品名称（必填）"
+                className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-medical-600"
+              />
+
+              <input
+                name="spec"
+                value={form.spec}
+                onChange={handleChange}
+                placeholder="规格，如 500mg*20片"
+                className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-medical-600"
+              />
+
+              <div className="grid grid-cols-2 gap-2">
+                <input
+                  name="dose"
+                  type="number"
+                  min="0"
+                  step="0.5"
+                  value={form.dose}
+                  onChange={handleChange}
+                  placeholder="每次剂量"
+                  className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-medical-600"
+                />
+                <input
+                  name="unit"
+                  value={form.unit}
+                  onChange={handleChange}
+                  placeholder="单位"
+                  className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-medical-600"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <input
+                  name="withMeal"
+                  value={form.withMeal}
+                  onChange={handleChange}
+                  placeholder="饭前/饭后"
+                  className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-medical-600"
+                />
+                <select
+                  name="sourceLabel"
+                  value={form.sourceLabel}
+                  onChange={handleChange}
+                  className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-medical-600"
+                >
+                  <option value="手动录入">手动录入</option>
+                  <option value="处方导入">处方导入</option>
+                </select>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <input
+                  name="stockQty"
+                  type="number"
+                  min="0"
+                  value={form.stockQty}
+                  onChange={handleChange}
+                  placeholder="当前库存"
+                  className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-medical-600"
+                />
+                <input
+                  name="stockUnit"
+                  value={form.stockUnit}
+                  onChange={handleChange}
+                  placeholder="库存单位"
+                  className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-medical-600"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <input
+                  name="startDate"
+                  type="date"
+                  value={form.startDate}
+                  onChange={handleChange}
+                  className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-medical-600"
+                />
+                <input
+                  name="endDate"
+                  type="date"
+                  value={form.endDate}
+                  onChange={handleChange}
+                  className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-medical-600"
+                />
+              </div>
+
+              <button
+                type="submit"
+                className="w-full rounded-xl bg-medical-600 px-3 py-2 text-sm font-medium text-white"
+              >
+                {editingId ? '保存药品修改' : '新增药品'}
+              </button>
+            </div>
+          </form>
+        </div>
+      ) : null}
     </section>
   )
 }

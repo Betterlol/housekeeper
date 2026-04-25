@@ -18,6 +18,7 @@ function formatDateTime(value) {
 
 export default function ProfilePage() {
   const [message, setMessage] = useState('')
+  const [editorOpen, setEditorOpen] = useState(false)
   const store = useStoreSnapshot()
 
   const userProfile = useMemo(
@@ -80,6 +81,7 @@ export default function ProfilePage() {
       note: form.note.trim(),
     })
 
+    setEditorOpen(false)
     setMessage('用户档案已保存，AI复诊报告将自动读取最新档案。')
   }
 
@@ -103,72 +105,27 @@ export default function ProfilePage() {
         </article>
       ) : null}
 
-      <form onSubmit={handleSaveProfile} className="space-y-3 rounded-2xl bg-white p-4 shadow-card">
-        <p className="text-sm font-semibold text-slate-900">慢病档案（可编辑）</p>
+      <article className="rounded-2xl bg-white p-4 shadow-card">
+        <div className="flex items-start justify-between gap-2">
+          <div>
+            <p className="text-sm font-semibold text-slate-900">慢病档案</p>
+            <p className="mt-2 text-xs text-slate-600">
+              {userProfile.name} · {userProfile.gender} · {userProfile.age}岁
+            </p>
+            <p className="mt-1 text-xs text-slate-600">诊断：{(userProfile.diseases || []).join(' + ')}</p>
+            <p className="mt-1 text-xs text-slate-600">初诊日期：{userProfile.diagnosisDate || '待补充'}</p>
+            <p className="mt-2 text-xs text-slate-500">{userProfile.note || '暂无备注。'}</p>
+          </div>
 
-        <input
-          name="name"
-          value={form.name}
-          onChange={handleChange}
-          placeholder="姓名"
-          className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-medical-600"
-        />
-
-        <div className="grid grid-cols-2 gap-2">
-          <input
-            name="age"
-            type="number"
-            min="1"
-            value={form.age}
-            onChange={handleChange}
-            placeholder="年龄"
-            className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-medical-600"
-          />
-
-          <select
-            name="gender"
-            value={form.gender}
-            onChange={handleChange}
-            className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-medical-600"
+          <button
+            type="button"
+            onClick={() => setEditorOpen(true)}
+            className="rounded-lg border border-medical-200 px-2 py-1 text-xs text-medical-700"
           >
-            <option value="男">男</option>
-            <option value="女">女</option>
-            <option value="其他">其他</option>
-          </select>
+            编辑档案
+          </button>
         </div>
-
-        <input
-          name="diseases"
-          value={form.diseases}
-          onChange={handleChange}
-          placeholder="慢病类型，逗号分隔"
-          className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-medical-600"
-        />
-
-        <input
-          name="diagnosisDate"
-          type="date"
-          value={form.diagnosisDate}
-          onChange={handleChange}
-          className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-medical-600"
-        />
-
-        <textarea
-          name="note"
-          value={form.note}
-          onChange={handleChange}
-          rows={3}
-          placeholder="备注"
-          className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-medical-600"
-        />
-
-        <button
-          type="submit"
-          className="w-full rounded-xl bg-medical-600 px-3 py-2 text-sm font-medium text-white"
-        >
-          保存档案
-        </button>
-      </form>
+      </article>
 
       <article className="rounded-2xl bg-white p-4 shadow-card">
         <p className="text-sm font-semibold text-slate-900">演示数据状态</p>
@@ -202,6 +159,91 @@ export default function ProfilePage() {
           重置演示数据
         </button>
       </article>
+
+      {editorOpen ? (
+        <div className="fixed inset-0 z-40 flex items-end justify-center bg-slate-900/45 p-3 backdrop-blur-sm">
+          <form
+            onSubmit={handleSaveProfile}
+            className="max-h-[88vh] w-full max-w-md overflow-y-auto rounded-3xl bg-white p-4 shadow-2xl"
+          >
+            <div className="mb-3 flex items-center justify-between">
+              <p className="text-base font-semibold text-slate-900">编辑慢病档案</p>
+              <button
+                type="button"
+                onClick={() => setEditorOpen(false)}
+                className="rounded-lg bg-slate-100 px-2 py-1 text-xs text-slate-700"
+              >
+                关闭
+              </button>
+            </div>
+
+            <div className="space-y-3">
+              <input
+                name="name"
+                value={form.name}
+                onChange={handleChange}
+                placeholder="姓名"
+                className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-medical-600"
+              />
+
+              <div className="grid grid-cols-2 gap-2">
+                <input
+                  name="age"
+                  type="number"
+                  min="1"
+                  value={form.age}
+                  onChange={handleChange}
+                  placeholder="年龄"
+                  className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-medical-600"
+                />
+
+                <select
+                  name="gender"
+                  value={form.gender}
+                  onChange={handleChange}
+                  className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-medical-600"
+                >
+                  <option value="男">男</option>
+                  <option value="女">女</option>
+                  <option value="其他">其他</option>
+                </select>
+              </div>
+
+              <input
+                name="diseases"
+                value={form.diseases}
+                onChange={handleChange}
+                placeholder="慢病类型，逗号分隔"
+                className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-medical-600"
+              />
+
+              <input
+                name="diagnosisDate"
+                type="date"
+                value={form.diagnosisDate}
+                onChange={handleChange}
+                className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-medical-600"
+              />
+
+              <textarea
+                name="note"
+                value={form.note}
+                onChange={handleChange}
+                rows={3}
+                placeholder="备注"
+                className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-medical-600"
+              />
+
+              <button
+                type="submit"
+                className="w-full rounded-xl bg-medical-600 px-3 py-2 text-sm font-medium text-white"
+              >
+                保存档案
+              </button>
+            </div>
+          </form>
+        </div>
+      ) : null}
     </section>
   )
 }

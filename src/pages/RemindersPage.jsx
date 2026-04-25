@@ -3,6 +3,7 @@ import MedicalIcon from '../components/MedicalIcon'
 import useStoreSnapshot from '../hooks/useStoreSnapshot'
 import {
   addReminderRule,
+  deleteReminderRule,
   getReminderRulesWithToday,
   markAllTodayTaken,
   markReminderMissed,
@@ -12,6 +13,7 @@ import {
   skipReminder,
   toggleReminderRule,
   triggerReminderNow,
+  updateReminderRule,
 } from '../utils/storage'
 
 const statusStyle = {
@@ -52,18 +54,21 @@ function nextTenMinutesTime() {
   return `${hour}:${minute}`
 }
 
+const initialRuleForm = {
+  medicationId: '',
+  time: nextTenMinutesTime(),
+  retryIntervalMinutes: 5,
+  maxRetryCount: 3,
+  enabled: true,
+}
+
 export default function RemindersPage() {
   const [message, setMessage] = useState('')
-  const [newRule, setNewRule] = useState({
-    medicationId: '',
-    time: nextTenMinutesTime(),
-    retryIntervalMinutes: 5,
-    maxRetryCount: 3,
-    enabled: true,
-  })
+  const [editorOpen, setEditorOpen] = useState(false)
+  const [editingRuleId, setEditingRuleId] = useState('')
+  const [ruleForm, setRuleForm] = useState(initialRuleForm)
 
   const store = useStoreSnapshot({ ensureToday: true })
-
   const medications = store.medications || []
   const rules = useMemo(() => getReminderRulesWithToday(), [store])
 
@@ -76,50 +81,86 @@ export default function RemindersPage() {
     .filter((item) => item.enabled && item.todayStatus === 'pending' && item.nextTriggerAt)
     .sort((a, b) => (a.nextTriggerAt > b.nextTriggerAt ? 1 : -1))[0]
 
+  const openCreate = () => {
+    setEditingRuleId('')
+    setRuleForm({ ...initialRuleForm, time: nextTenMinutesTime() })
+    setEditorOpen(true)
+  }
+
+  const openEdit = (rule) => {
+    setEditingRuleId(rule.id)
+    setRuleForm({
+      medicationId: rule.medicationId,
+      time: rule.time || nextTenMinutesTime(),
+      retryIntervalMinutes: Number(rule.retryIntervalMinutes || 5),
+      maxRetryCount: Number(rule.maxRetryCount || 3),
+      enabled: Boolean(rule.enabled),
+    })
+    setEditorOpen(true)
+  }
+
+  const closeEditor = () => {
+    setEditorOpen(false)
+    setEditingRuleId('')
+    setRuleForm({ ...initialRuleForm, time: nextTenMinutesTime() })
+  }
+
   const handleRuleField = (event) => {
     const { name, value, type, checked } = event.target
-    setNewRule((prev) => ({
+    setRuleForm((prev) => ({
       ...prev,
       [name]: type === 'checkbox' ? checked : value,
     }))
   }
 
-  const handleCreateRule = (event) => {
+  const handleSubmitRule = (event) => {
     event.preventDefault()
 
-    if (!newRule.medicationId) {
-      setMessage('请先选择已存在药品，再创建提醒。')
+    if (!ruleForm.medicationId) {
+      setMessage('请先选择已存在药品，再保存提醒规则。')
       return
     }
 
-    addReminderRule({
-      medicationId: newRule.medicationId,
-      time: newRule.time,
-      enabled: Boolean(newRule.enabled),
+    const payload = {
+      medicationId: ruleForm.medicationId,
+      time: ruleForm.time,
+      enabled: Boolean(ruleForm.enabled),
       repeatDays: [0, 1, 2, 3, 4, 5, 6],
-      retryIntervalMinutes: Number(newRule.retryIntervalMinutes),
-      maxRetryCount: Number(newRule.maxRetryCount),
-    })
+      retryIntervalMinutes: Number(ruleForm.retryIntervalMinutes),
+      maxRetryCount: Number(ruleForm.maxRetryCount),
+    }
 
-    setMessage('提醒规则已创建。')
-    setNewRule((prev) => ({
-      ...prev,
-      medicationId: '',
-      time: nextTenMinutesTime(),
-      retryIntervalMinutes: 5,
-      maxRetryCount: 3,
-      enabled: true,
-    }))
+    if (editingRuleId) {
+      updateReminderRule(editingRuleId, payload)
+      setMessage('提醒规则已更新。')
+    } else {
+      addReminderRule(payload)
+      setMessage('提醒规则已创建。')
+    }
+
+    closeEditor()
   }
 
   return (
     <section className="space-y-4">
       <article className="rounded-3xl bg-gradient-to-br from-cyan-700 via-medical-700 to-emerald-700 p-5 text-white shadow-[0_22px_44px_-20px_rgba(15,118,110,0.85)]">
-        <p className="text-xs text-cyan-100">闹钟规则管理</p>
-        <h1 className="mt-1 text-xl font-semibold">提醒中心</h1>
-        <p className="mt-2 text-xs text-cyan-100">
-          下次触发：{nextTrigger ? `${formatTime(nextTrigger.nextTriggerAt)}（${formatDistance(nextTrigger.nextTriggerAt)}）` : '暂无'}
-        </p>
+        <div className="flex items-start justify-between gap-2">
+          <div>
+            <p className="text-xs text-cyan-100">闹钟规则管理</p>
+            <h1 className="mt-1 text-xl font-semibold">提醒中心</h1>
+            <p className="mt-2 text-xs text-cyan-100">
+              下次触发：{nextTrigger ? `${formatTime(nextTrigger.nextTriggerAt)}（${formatDistance(nextTrigger.nextTriggerAt)}）` : '暂无'}
+            </p>
+          </div>
+
+          <button
+            type="button"
+            onClick={openCreate}
+            className="rounded-xl bg-white/20 px-3 py-2 text-xs font-medium text-white"
+          >
+            新增规则
+          </button>
+        </div>
       </article>
 
       {message ? (
@@ -162,79 +203,6 @@ export default function RemindersPage() {
         </div>
       </article>
 
-      <article className="rounded-2xl bg-white p-4 shadow-[0_14px_30px_-22px_rgba(15,23,42,0.9)]">
-        <p className="text-sm font-semibold text-slate-900">新增提醒规则</p>
-
-        {medications.length === 0 ? (
-          <p className="mt-2 text-xs text-amber-700">请先到“用药计划”新增药品，再创建提醒规则。</p>
-        ) : (
-          <form onSubmit={handleCreateRule} className="mt-3 space-y-2">
-            <select
-              name="medicationId"
-              value={newRule.medicationId}
-              onChange={handleRuleField}
-              className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-medical-600"
-            >
-              <option value="">选择已存在药品</option>
-              {medications.map((medication) => (
-                <option key={medication.id} value={medication.id}>
-                  {medication.drugName}
-                </option>
-              ))}
-            </select>
-
-            <div className="grid grid-cols-3 gap-2">
-              <input
-                name="time"
-                type="time"
-                value={newRule.time}
-                onChange={handleRuleField}
-                className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-medical-600"
-              />
-
-              <select
-                name="retryIntervalMinutes"
-                value={newRule.retryIntervalMinutes}
-                onChange={handleRuleField}
-                className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-medical-600"
-              >
-                <option value={5}>5分钟</option>
-                <option value={10}>10分钟</option>
-                <option value={15}>15分钟</option>
-              </select>
-
-              <select
-                name="maxRetryCount"
-                value={newRule.maxRetryCount}
-                onChange={handleRuleField}
-                className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-medical-600"
-              >
-                <option value={1}>1次</option>
-                <option value={3}>3次</option>
-                <option value={5}>5次</option>
-              </select>
-            </div>
-
-            <label className="flex items-center gap-2 text-xs text-slate-600">
-              <input
-                name="enabled"
-                type="checkbox"
-                checked={Boolean(newRule.enabled)}
-                onChange={handleRuleField}
-              />
-              创建后立即启用
-            </label>
-
-            <button
-              type="submit"
-              className="w-full rounded-xl bg-medical-600 px-3 py-2 text-sm font-medium text-white"
-            >
-              创建提醒规则
-            </button>
-          </form>
-        )}
-      </article>
-
       <section className="space-y-3">
         {rules.map((rule) => {
           const todayItem = rule.todayItem
@@ -250,46 +218,66 @@ export default function RemindersPage() {
                   <p className="mt-1 text-xs text-slate-500">提醒时间 {rule.time}</p>
                 </div>
 
-                <details className="relative">
-                  <summary className={`cursor-pointer list-none rounded-full px-2 py-1 text-[11px] font-medium ${statusStyle[rule.todayStatus]}`}>
-                    {statusLabel[rule.todayStatus]}
-                  </summary>
-                  <div className="absolute right-0 z-10 mt-2 w-32 rounded-xl border border-slate-200 bg-white p-2 shadow-xl">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (!todayItem) return
-                        markReminderTaken(todayItem.id)
-                        setMessage(`${rule.medication?.drugName || '当前药品'} 已标记为已服药。`)
-                      }}
-                      className="block w-full rounded-lg px-2 py-1 text-left text-xs text-slate-700 hover:bg-slate-100"
-                    >
-                      标记已服药
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (!todayItem) return
-                        skipReminder(todayItem.id)
-                        setMessage(`${rule.medication?.drugName || '当前药品'} 已标记为已跳过。`)
-                      }}
-                      className="mt-1 block w-full rounded-lg px-2 py-1 text-left text-xs text-slate-700 hover:bg-slate-100"
-                    >
-                      标记已跳过
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (!todayItem) return
-                        markReminderMissed(todayItem.id)
-                        setMessage(`${rule.medication?.drugName || '当前药品'} 已标记为已漏服。`)
-                      }}
-                      className="mt-1 block w-full rounded-lg px-2 py-1 text-left text-xs text-slate-700 hover:bg-slate-100"
-                    >
-                      标记已漏服
-                    </button>
-                  </div>
-                </details>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => openEdit(rule)}
+                    className="rounded-lg border border-medical-200 px-2 py-1 text-xs text-medical-700"
+                  >
+                    编辑
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      deleteReminderRule(rule.id)
+                      setMessage(`${rule.medication?.drugName || '该规则'} 已删除。`)
+                    }}
+                    className="rounded-lg border border-rose-200 px-2 py-1 text-xs text-rose-600"
+                  >
+                    删除
+                  </button>
+
+                  <details className="relative">
+                    <summary className={`cursor-pointer list-none rounded-full px-2 py-1 text-[11px] font-medium ${statusStyle[rule.todayStatus]}`}>
+                      {statusLabel[rule.todayStatus]}
+                    </summary>
+                    <div className="absolute right-0 z-10 mt-2 w-32 rounded-xl border border-slate-200 bg-white p-2 shadow-xl">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (!todayItem) return
+                          markReminderTaken(todayItem.id)
+                          setMessage(`${rule.medication?.drugName || '当前药品'} 已标记为已服药。`)
+                        }}
+                        className="block w-full rounded-lg px-2 py-1 text-left text-xs text-slate-700 hover:bg-slate-100"
+                      >
+                        标记已服药
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (!todayItem) return
+                          skipReminder(todayItem.id)
+                          setMessage(`${rule.medication?.drugName || '当前药品'} 已标记为已跳过。`)
+                        }}
+                        className="mt-1 block w-full rounded-lg px-2 py-1 text-left text-xs text-slate-700 hover:bg-slate-100"
+                      >
+                        标记已跳过
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (!todayItem) return
+                          markReminderMissed(todayItem.id)
+                          setMessage(`${rule.medication?.drugName || '当前药品'} 已标记为已漏服。`)
+                        }}
+                        className="mt-1 block w-full rounded-lg px-2 py-1 text-left text-xs text-slate-700 hover:bg-slate-100"
+                      >
+                        标记已漏服
+                      </button>
+                    </div>
+                  </details>
+                </div>
               </div>
 
               <div className="grid grid-cols-2 gap-2 text-xs text-slate-600">
@@ -355,6 +343,95 @@ export default function RemindersPage() {
           “延后提醒”只会调整本次下次触发时间，不改变用户可见状态。响铃后点击弹窗“稍后提醒”会按规则重试；达到最大提醒次数后，系统自动记为“已漏服”。
         </p>
       </article>
+
+      {editorOpen ? (
+        <div className="fixed inset-0 z-40 flex items-end justify-center bg-slate-900/45 p-3 backdrop-blur-sm">
+          <form
+            onSubmit={handleSubmitRule}
+            className="max-h-[88vh] w-full max-w-md overflow-y-auto rounded-3xl bg-white p-4 shadow-2xl"
+          >
+            <div className="mb-3 flex items-center justify-between">
+              <p className="text-base font-semibold text-slate-900">{editingRuleId ? '编辑提醒规则' : '新增提醒规则'}</p>
+              <button
+                type="button"
+                onClick={closeEditor}
+                className="rounded-lg bg-slate-100 px-2 py-1 text-xs text-slate-700"
+              >
+                关闭
+              </button>
+            </div>
+
+            {medications.length === 0 ? (
+              <p className="text-xs text-amber-700">请先到“用药计划”新增药品，再创建提醒规则。</p>
+            ) : (
+              <div className="space-y-3">
+                <select
+                  name="medicationId"
+                  value={ruleForm.medicationId}
+                  onChange={handleRuleField}
+                  className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-medical-600"
+                >
+                  <option value="">选择已存在药品</option>
+                  {medications.map((medication) => (
+                    <option key={medication.id} value={medication.id}>
+                      {medication.drugName}
+                    </option>
+                  ))}
+                </select>
+
+                <div className="grid grid-cols-3 gap-2">
+                  <input
+                    name="time"
+                    type="time"
+                    value={ruleForm.time}
+                    onChange={handleRuleField}
+                    className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-medical-600"
+                  />
+
+                  <select
+                    name="retryIntervalMinutes"
+                    value={ruleForm.retryIntervalMinutes}
+                    onChange={handleRuleField}
+                    className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-medical-600"
+                  >
+                    <option value={5}>5分钟</option>
+                    <option value={10}>10分钟</option>
+                    <option value={15}>15分钟</option>
+                  </select>
+
+                  <select
+                    name="maxRetryCount"
+                    value={ruleForm.maxRetryCount}
+                    onChange={handleRuleField}
+                    className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-medical-600"
+                  >
+                    <option value={1}>1次</option>
+                    <option value={3}>3次</option>
+                    <option value={5}>5次</option>
+                  </select>
+                </div>
+
+                <label className="flex items-center gap-2 text-xs text-slate-600">
+                  <input
+                    name="enabled"
+                    type="checkbox"
+                    checked={Boolean(ruleForm.enabled)}
+                    onChange={handleRuleField}
+                  />
+                  启用该提醒规则
+                </label>
+
+                <button
+                  type="submit"
+                  className="w-full rounded-xl bg-medical-600 px-3 py-2 text-sm font-medium text-white"
+                >
+                  {editingRuleId ? '保存规则修改' : '创建提醒规则'}
+                </button>
+              </div>
+            )}
+          </form>
+        </div>
+      ) : null}
     </section>
   )
 }
