@@ -139,10 +139,10 @@ export default function PurchasePage() {
 
   return (
     <section className="space-y-4">
-      <article className="rounded-3xl bg-gradient-to-br from-teal-700 via-emerald-700 to-cyan-700 p-5 text-white shadow-[0_22px_44px_-20px_rgba(13,148,136,0.85)]">
-        <p className="text-xs text-teal-100">智能购药助手</p>
+      <article className="rounded-3xl bg-gradient-to-br from-teal-600 via-emerald-600 to-cyan-600 p-5 text-white shadow-[0_18px_36px_-24px_rgba(13,148,136,0.56)]">
+        <p className="text-xs text-teal-50/85">智能购药助手</p>
         <h1 className="mt-1 text-xl font-semibold">互联网药房补货中心</h1>
-        <p className="mt-2 text-xs text-teal-100">根据当前用药计划动态匹配补货建议与配送方案</p>
+        <p className="mt-2 text-xs text-teal-50/85">根据当前用药计划动态匹配补货建议与配送方案</p>
       </article>
 
       {isMatching ? (

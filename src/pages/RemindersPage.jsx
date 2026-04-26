@@ -150,12 +150,12 @@ export default function RemindersPage() {
 
   return (
     <section className="space-y-4">
-      <article className="rounded-3xl bg-gradient-to-br from-cyan-700 via-medical-700 to-emerald-700 p-5 text-white shadow-[0_22px_44px_-20px_rgba(15,118,110,0.85)]">
+      <article className="rounded-3xl bg-gradient-to-br from-cyan-600 via-medical-600 to-emerald-600 p-5 text-white shadow-[0_18px_36px_-24px_rgba(15,118,110,0.58)]">
         <div className="flex items-start justify-between gap-2">
           <div>
-            <p className="text-xs text-cyan-100">闹钟规则管理</p>
+            <p className="text-xs text-cyan-50/85">闹钟规则管理</p>
             <h1 className="mt-1 text-xl font-semibold">提醒中心</h1>
-            <p className="mt-2 text-xs text-cyan-100">
+            <p className="mt-2 text-xs text-cyan-50/85">
               下次触发：{nextTrigger ? `${formatTime(nextTrigger.nextTriggerAt)}（${formatDistance(nextTrigger.nextTriggerAt)}）` : '暂无'}
             </p>
           </div>
@@ -163,7 +163,7 @@ export default function RemindersPage() {
           <button
             type="button"
             onClick={openCreate}
-            className="rounded-xl bg-white/20 px-3 py-2 text-xs font-medium text-white"
+            className="rounded-xl bg-white/14 px-3 py-2 text-xs font-medium text-white"
           >
             新增规则
           </button>
