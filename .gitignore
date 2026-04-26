@@ -1,7 +1,19 @@
 node_modules/
 dist/
 .codex
+.github/
 .DS_Store
 *.log
 doc/
 tmp/
+
+# Playwright
+/test-results/
+/playwright-report/
+/blob-report/
+/playwright/.cache/
+/playwright/.auth/
+.playwright-mcp/
+playwright.config.js
+scripts/run-playwright.cjs
+tests/

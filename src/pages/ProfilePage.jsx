@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import useStoreSnapshot from '../hooks/useStoreSnapshot'
 import {
   clearStoreForDemo,
@@ -6,7 +7,7 @@ import {
   getTodayDateKey,
   updateUserProfile,
 } from '../utils/storage'
-import ProfileAccountCard from '../components/profile/ProfileAccountCard'
+import PageHero from '../components/common/PageHero'
 import ProfileArchiveCard from '../components/profile/ProfileArchiveCard'
 import ProfileListSection from '../components/profile/ProfileListSection'
 import ProfileDemoModeCard from '../components/profile/ProfileDemoModeCard'
@@ -40,6 +41,7 @@ const healthEntryItems = [
     icon: 'consult',
     iconBg: 'bg-cyan-50',
     iconColor: 'text-cyan-700',
+    route: '/consult',
   },
   {
     key: 'intake-export',
@@ -56,6 +58,7 @@ const healthEntryItems = [
     icon: 'ai',
     iconBg: 'bg-violet-50',
     iconColor: 'text-violet-700',
+    route: '/consult',
   },
   {
     key: 'reminder-setting',
@@ -64,6 +67,7 @@ const healthEntryItems = [
     icon: 'reminder',
     iconBg: 'bg-amber-50',
     iconColor: 'text-amber-700',
+    route: '/reminders',
   },
   {
     key: 'family-collab',
@@ -157,6 +161,7 @@ function resolveLatestUpdateTime(store) {
 }
 
 export default function ProfilePage() {
+  const navigate = useNavigate()
   const store = useStoreSnapshot()
 
   const [message, setMessage] = useState('')
@@ -317,26 +322,43 @@ export default function ProfilePage() {
   }
 
   const handlePlaceholderPress = (item) => {
+    if (item?.route) {
+      navigate(item.route)
+      return
+    }
+
     window.alert(`${item.title} 功能建设中，当前为演示占位入口。`)
   }
 
   return (
     <section className="space-y-4 pb-2">
-      <header className="px-1">
-        <h1 className="text-xl font-semibold text-slate-900">个人健康账户</h1>
-        <p className="mt-1 text-sm text-slate-500">慢病管理档案、健康数据入口与系统设置</p>
-      </header>
+      <PageHero
+        icon="profile"
+        variant="soft"
+        eyebrow="慢病健康账户"
+        title="个人健康账户"
+        description="把身份信息、慢病标签、账户状态和档案操作统一到轻量 Hero 里，让“我的”页像健康账户，而不是普通设置页。"
+        badges={[
+          `${userProfile.gender || '男'} · ${userProfile.age || 58}岁`,
+          ...((userProfile.diseases || []).slice(0, 2)),
+        ]}
+        metrics={[
+          { label: '当前药品数', value: `${statCounts.medications}`, tone: 'cyan' },
+          { label: '提醒规则', value: `${statCounts.reminderRules}`, tone: 'amber' },
+          { label: '服药记录', value: `${statCounts.intakeLogs}`, tone: 'emerald' },
+        ]}
+        actions={[
+          { label: '编辑档案', onClick: () => setEditorOpen(true) },
+          { label: '导入报告', onClick: openReportImport, variant: 'secondary' },
+        ]}
+        footer={`${userProfile.name || '张先生'} · 健康账户已启用 · 最近更新 ${updatedAtText}`}
+      />
 
       {message ? (
         <article className="rounded-xl border border-emerald-100 bg-emerald-50 px-3 py-2 text-xs text-emerald-700">
           {message}
         </article>
       ) : null}
-
-      <ProfileAccountCard
-        userProfile={userProfile}
-        updatedAtText={updatedAtText}
-      />
 
       <ProfileArchiveCard
         userProfile={userProfile}

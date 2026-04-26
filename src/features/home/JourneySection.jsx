@@ -37,7 +37,7 @@ export default function JourneySection({ journeySteps, refill }) {
           当前阶段：{journeySteps[2].detail}
         </p>
         <p className="mt-1 text-xs text-slate-600">
-          {refill ? `${refill.drugName} 预计 ${refill.daysLeft} 天后库存不足。` : '当前库存风险可控，建议持续按时打卡。'}
+          {refill ? `${refill.drugName} 预计 ${refill.remainingDays} 天后库存不足。` : '当前库存风险可控，建议持续按时打卡。'}
         </p>
       </div>
     </section>

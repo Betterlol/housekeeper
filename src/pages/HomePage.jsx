@@ -162,7 +162,7 @@ export default function HomePage() {
       title: '续方',
       icon: 'clock',
       status: refill ? '已提醒' : '稳定',
-      detail: refill ? `${refill.drugName} ${refill.daysLeft} 天后用完` : '暂无续方风险',
+      detail: refill ? `${refill.drugName} ${refill.remainingDays} 天后用完` : '暂无续方风险',
       done: Boolean(refill),
     },
   ]

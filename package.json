@@ -6,7 +6,9 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test:e2e": "node scripts/run-playwright.cjs --project=chromium",
+    "test:e2e:headed": "node scripts/run-playwright.cjs --project=chromium --headed"
   },
   "dependencies": {
     "react": "^18.3.1",
@@ -14,6 +16,8 @@
     "react-router-dom": "^6.28.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.59.1",
+    "@types/node": "^25.6.0",
     "@vitejs/plugin-react": "^4.3.4",
     "autoprefixer": "^10.4.20",
     "playwright": "^1.59.1",
