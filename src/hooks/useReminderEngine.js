@@ -13,6 +13,8 @@ import {
   sendMedicationNotification,
 } from '../utils/notification'
 
+const REMINDER_TICK_MS = 3000
+
 export default function useReminderEngine() {
   const [activeReminders, setActiveReminders] = useState([])
   const [permissionState, setPermissionState] = useState('default')
@@ -43,7 +45,7 @@ export default function useReminderEngine() {
       runCycle()
     })
 
-    const interval = setInterval(runCycle, 10000)
+    const interval = setInterval(runCycle, REMINDER_TICK_MS)
     const unsubscribe = subscribeStoreUpdates(refreshQueue)
 
     const handleVisibility = () => {

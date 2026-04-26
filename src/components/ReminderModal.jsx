@@ -2,6 +2,12 @@ import MedicalIcon from './MedicalIcon'
 
 function formatTime(value) {
   if (!value) return '--:--'
+  const parsed = new Date(value)
+  if (!Number.isNaN(parsed.getTime())) {
+    const hh = `${parsed.getHours()}`.padStart(2, '0')
+    const mm = `${parsed.getMinutes()}`.padStart(2, '0')
+    return `${hh}:${mm}`
+  }
   return value.slice(11, 16)
 }
 

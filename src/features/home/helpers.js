@@ -1,5 +1,11 @@
 export function formatTime(iso) {
   if (!iso) return '--:--'
+  const parsed = new Date(iso)
+  if (!Number.isNaN(parsed.getTime())) {
+    const hh = `${parsed.getHours()}`.padStart(2, '0')
+    const mm = `${parsed.getMinutes()}`.padStart(2, '0')
+    return `${hh}:${mm}`
+  }
   return iso.slice(11, 16)
 }
 

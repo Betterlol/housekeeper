@@ -9,11 +9,41 @@ export const INTERNAL_REMINDER_STATUSES = ['waiting', 'ringing', 'snoozed', 'ret
 const FINAL_VISIBLE_STATUS_SET = new Set(['taken', 'missed', 'skipped'])
 const DEFAULT_REPEAT_DAYS = [0, 1, 2, 3, 4, 5, 6]
 const ONBOARDING_STEP_COUNT = 6
+const RING_ACK_TIMEOUT_MS = 60 * 1000
 
 const clone = (obj) => JSON.parse(JSON.stringify(obj))
 
+function pad2(value) {
+  return `${value}`.padStart(2, '0')
+}
+
+function toLocalDateTime(date, withSeconds = true) {
+  const year = date.getFullYear()
+  const month = pad2(date.getMonth() + 1)
+  const day = pad2(date.getDate())
+  const hour = pad2(date.getHours())
+  const minute = pad2(date.getMinutes())
+
+  if (!withSeconds) {
+    return `${year}-${month}-${day}T${hour}:${minute}`
+  }
+
+  const second = pad2(date.getSeconds())
+  return `${year}-${month}-${day}T${hour}:${minute}:${second}`
+}
+
+function parseDateLike(value) {
+  if (!value) return null
+  const parsed = new Date(value)
+  if (Number.isNaN(parsed.getTime())) return null
+  return parsed
+}
+
 function toDateKey(date) {
-  return date.toISOString().slice(0, 10)
+  const year = date.getFullYear()
+  const month = pad2(date.getMonth() + 1)
+  const day = pad2(date.getDate())
+  return `${year}-${month}-${day}`
 }
 
 function toDateTime(dateKey, time) {
@@ -28,6 +58,10 @@ function addDays(date, days) {
 
 function toTime(iso) {
   if (!iso || !iso.includes('T')) return '08:00'
+  const parsed = parseDateLike(iso)
+  if (parsed) {
+    return `${pad2(parsed.getHours())}:${pad2(parsed.getMinutes())}`
+  }
   return iso.slice(11, 16)
 }
 
@@ -48,7 +82,23 @@ function toNonNegativeInt(value, fallback = 0) {
 }
 
 function nowIso() {
-  return new Date().toISOString()
+  return toLocalDateTime(new Date())
+}
+
+function addMinutesToNow(minutes) {
+  return toLocalDateTime(new Date(Date.now() + Number(minutes || 0) * 60 * 1000))
+}
+
+function normalizeMinuteDateTime(value, fallback) {
+  const parsed = parseDateLike(value)
+  if (!parsed) return fallback
+  return toLocalDateTime(parsed, false)
+}
+
+function normalizeSecondDateTime(value, fallback) {
+  const parsed = parseDateLike(value)
+  if (!parsed) return fallback
+  return toLocalDateTime(parsed)
 }
 
 function getDefaultUserProfile() {
@@ -160,8 +210,12 @@ function normalizeReminderInstance(instance = {}, index = 0) {
     instance.visibleStatus || instance.reminderStatus || instance.status || 'pending'
   )
 
-  const scheduledAt = instance.scheduledAt || toDateTime(toDateKey(new Date()), '08:00')
-  const currentTriggerAt = instance.currentTriggerAt || instance.snoozeUntil || scheduledAt
+  const fallbackScheduledAt = toDateTime(toDateKey(new Date()), '08:00')
+  const scheduledAt = normalizeMinuteDateTime(instance.scheduledAt, fallbackScheduledAt)
+  const currentTriggerAt = normalizeSecondDateTime(
+    instance.currentTriggerAt || instance.snoozeUntil || scheduledAt,
+    scheduledAt
+  )
 
   return {
     id: instance.id || `instance-${Date.now()}-${index}`,
@@ -184,14 +238,15 @@ function normalizeReminderInstance(instance = {}, index = 0) {
 
 function normalizeIntakeLog(log = {}, index = 0) {
   const status = normalizeVisibleStatus(log.status || log.reminderStatus || 'pending')
+  const fallbackScheduledAt = toDateTime(toDateKey(new Date()), '08:00')
 
   return {
     id: log.id || `log-${Date.now()}-${index}`,
     medicationId: log.medicationId || log.medId || '',
     medId: log.medicationId || log.medId || '',
     reminderInstanceId: log.reminderInstanceId || '',
-    scheduledAt: log.scheduledAt || toDateTime(toDateKey(new Date()), '08:00'),
-    takenAt: log.takenAt || '',
+    scheduledAt: normalizeMinuteDateTime(log.scheduledAt, fallbackScheduledAt),
+    takenAt: normalizeSecondDateTime(log.takenAt, ''),
     status,
     reason: log.reason || '',
     reminderStatus: status,
@@ -517,7 +572,15 @@ function normalizeStoreSchema(rawStore = {}) {
 
 function compareIso(a, b) {
   if (a === b) return 0
-  return a > b ? 1 : -1
+  const timeA = parseDateLike(a)?.getTime()
+  const timeB = parseDateLike(b)?.getTime()
+
+  if (typeof timeA === 'number' && typeof timeB === 'number') {
+    if (timeA === timeB) return 0
+    return timeA > timeB ? 1 : -1
+  }
+
+  return `${a}` > `${b}` ? 1 : -1
 }
 
 function syncInstancesForDate(store, dateKey = toDateKey(new Date())) {
@@ -1011,7 +1074,7 @@ export function processReminderCycle() {
   const currentStore = ensureTodayReminderInstances()
   const todayKey = getTodayDateKey()
   const now = new Date()
-  const nowValue = now.toISOString()
+  const nowValue = nowIso()
 
   const queueSet = new Set(currentStore.reminderQueue || [])
   const notifiedItems = []
@@ -1050,11 +1113,52 @@ export function processReminderCycle() {
     }
 
     if (instance.internalStatus === 'ringing') {
-      queueSet.add(instance.id)
-      return instance
+      const notifiedAt = parseDateLike(instance.lastNotifiedAt || instance.notifiedAt || instance.currentTriggerAt)
+      const ringingSince = notifiedAt ? notifiedAt.getTime() : now.getTime()
+      const elapsedMs = now.getTime() - ringingSince
+
+      if (elapsedMs < RING_ACK_TIMEOUT_MS) {
+        queueSet.add(instance.id)
+        return instance
+      }
+
+      const nextRetryCount = toNonNegativeInt(instance.retryCount, 0) + 1
+
+      if (nextRetryCount >= rule.maxRetryCount) {
+        const missed = {
+          ...instance,
+          retryCount: nextRetryCount,
+          visibleStatus: 'missed',
+          status: 'missed',
+          reminderStatus: 'missed',
+          internalStatus: 'expired',
+          completedAt: nowValue,
+        }
+
+        changed = true
+        queueSet.delete(instance.id)
+        missedInstances.push(missed)
+        return missed
+      }
+
+      const retrying = {
+        ...instance,
+        retryCount: nextRetryCount,
+        internalStatus: 'retrying',
+        currentTriggerAt: addMinutesToNow(rule.retryIntervalMinutes || 5),
+        snoozeUntil: '',
+      }
+
+      changed = true
+      queueSet.delete(instance.id)
+      return retrying
     }
 
-    const dueAt = new Date(instance.currentTriggerAt || instance.scheduledAt)
+    const dueAt = parseDateLike(instance.currentTriggerAt || instance.scheduledAt)
+    if (!dueAt) {
+      queueSet.delete(instance.id)
+      return instance
+    }
     if (now < dueAt) {
       queueSet.delete(instance.id)
       return instance
@@ -1161,7 +1265,7 @@ export function postponeReminderBeforeRing(reminderId, minutes = 5) {
   if (target.internalStatus === 'ringing') return false
 
   const base = new Date(target.currentTriggerAt || target.scheduledAt)
-  const nextTriggerAt = new Date(base.getTime() + Number(minutes || 5) * 60 * 1000).toISOString()
+  const nextTriggerAt = toLocalDateTime(new Date(base.getTime() + Number(minutes || 5) * 60 * 1000))
 
   const { changed, nextStore } = withInstanceUpdate(store, reminderId, (instance) => ({
     ...instance,
@@ -1258,6 +1362,48 @@ export function markReminderMissed(reminderId) {
   setStore(mergedStore)
 }
 
+export function resetReminderToPending(reminderId) {
+  const store = getStore()
+  const queueSet = new Set(store.reminderQueue || [])
+  const target = (store.reminderInstances || []).find((instance) => instance.id === reminderId)
+  if (!target) return { ok: false, reason: 'missing' }
+
+  const rule = (store.reminderRules || []).find((item) => item.id === target.ruleId)
+  if (!rule?.enabled) return { ok: false, reason: 'disabled' }
+
+  const now = new Date()
+  const scheduled = new Date(target.scheduledAt || nowIso())
+  const retryMinutes = Math.max(1, Number(rule.retryIntervalMinutes || 5))
+  const nextTriggerAt = scheduled.getTime() > now.getTime()
+    ? toLocalDateTime(scheduled)
+    : toLocalDateTime(new Date(now.getTime() + retryMinutes * 60 * 1000))
+
+  const { changed, nextStore } = withInstanceUpdate(store, reminderId, (instance) => ({
+    ...instance,
+    visibleStatus: 'pending',
+    status: 'pending',
+    reminderStatus: 'pending',
+    internalStatus: 'waiting',
+    currentTriggerAt: nextTriggerAt,
+    retryCount: 0,
+    completedAt: '',
+    takenAt: '',
+    snoozeUntil: '',
+  }))
+
+  if (!changed) return { ok: false, reason: 'unchanged' }
+
+  queueSet.delete(reminderId)
+
+  setStore({
+    ...nextStore,
+    reminderQueue: Array.from(queueSet),
+    intakeLogs: (nextStore.intakeLogs || []).filter((log) => log.reminderInstanceId !== reminderId),
+  })
+
+  return { ok: true }
+}
+
 export function snoozeReminder(reminderId, minutes) {
   const store = getStore()
   const queueSet = new Set(store.reminderQueue || [])
@@ -1269,7 +1415,7 @@ export function snoozeReminder(reminderId, minutes) {
   const delayMinutes = Number(minutes || rule?.retryIntervalMinutes || 5)
 
   const nextRetryCount = toNonNegativeInt(target.retryCount, 0) + 1
-  const nextTriggerAt = new Date(Date.now() + delayMinutes * 60 * 1000).toISOString()
+  const nextTriggerAt = addMinutesToNow(delayMinutes)
 
   const { changed, nextStore } = withInstanceUpdate(store, reminderId, (instance) => ({
     ...instance,
@@ -1577,17 +1723,17 @@ function buildDefenseDemoStore() {
         } else if (rule.id === 'rule-2') {
           visibleStatus = 'pending'
           internalStatus = 'waiting'
-          currentTriggerAt = new Date(Date.now() + 3 * 60 * 1000).toISOString()
+          currentTriggerAt = addMinutesToNow(3)
           completedAt = ''
         } else if (rule.id === 'rule-3') {
           visibleStatus = 'pending'
           internalStatus = 'waiting'
-          currentTriggerAt = new Date(Date.now() + 25 * 60 * 1000).toISOString()
+          currentTriggerAt = addMinutesToNow(25)
           completedAt = ''
         } else if (rule.id === 'rule-4') {
           visibleStatus = 'skipped'
           internalStatus = 'completed'
-          completedAt = new Date(Date.now() - 30 * 60 * 1000).toISOString()
+          completedAt = addMinutesToNow(-30)
         }
       }
 

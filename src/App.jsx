@@ -15,6 +15,7 @@ function AppShell({ children }) {
   return (
     <div className="relative mx-auto min-h-screen w-full max-w-md overflow-hidden px-4 pb-32 pt-4">
       <div className="app-shell-bg pointer-events-none absolute inset-0 -z-10" />
+      <div className="app-shell-frame pointer-events-none absolute inset-x-2 bottom-28 top-2 -z-10 rounded-[30px]" />
       <div className="app-shell-glow-cyan pointer-events-none absolute -left-16 top-20 -z-10 h-56 w-56 rounded-full bg-cyan-300/35 blur-3xl" />
       <div className="app-shell-glow-teal pointer-events-none absolute -right-20 top-96 -z-10 h-72 w-72 rounded-full bg-teal-200/35 blur-3xl" />
       <div className="relative z-10">{children}</div>

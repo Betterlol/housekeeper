@@ -1,5 +1,8 @@
 function toDateKey(date) {
-  return date.toISOString().slice(0, 10)
+  const year = date.getFullYear()
+  const month = `${date.getMonth() + 1}`.padStart(2, '0')
+  const day = `${date.getDate()}`.padStart(2, '0')
+  return `${year}-${month}-${day}`
 }
 
 function toDateFromKey(key) {
@@ -301,7 +304,10 @@ export function getLateNightMissedCount(input, logsInput) {
 
   return events.filter((event) => {
     if (event.status !== 'missed') return false
-    const time = (event.scheduledAt || '').slice(11, 16)
+    const parsed = new Date(event.scheduledAt || '')
+    const time = Number.isNaN(parsed.getTime())
+      ? (event.scheduledAt || '').slice(11, 16)
+      : `${`${parsed.getHours()}`.padStart(2, '0')}:${`${parsed.getMinutes()}`.padStart(2, '0')}`
     return toMinutes(time) >= 20 * 60
   }).length
 }

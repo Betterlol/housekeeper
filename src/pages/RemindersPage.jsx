@@ -10,6 +10,7 @@ import {
   markReminderTaken,
   postponeReminderBeforeRing,
   restoreReminderDemoData,
+  resetReminderToPending,
   skipReminder,
   toggleReminderRule,
   triggerReminderNow,
@@ -34,6 +35,12 @@ const statusLabel = {
 
 function formatTime(value) {
   if (!value) return '--:--'
+  const parsed = new Date(value)
+  if (!Number.isNaN(parsed.getTime())) {
+    const hh = `${parsed.getHours()}`.padStart(2, '0')
+    const mm = `${parsed.getMinutes()}`.padStart(2, '0')
+    return `${hh}:${mm}`
+  }
   return value.slice(11, 16)
 }
 
@@ -274,6 +281,25 @@ export default function RemindersPage() {
                         className="mt-1 block w-full rounded-lg px-2 py-1 text-left text-xs text-slate-700 hover:bg-slate-100"
                       >
                         标记已漏服
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (!todayItem) return
+                          const result = resetReminderToPending(todayItem.id)
+                          if (!result.ok) {
+                            if (result.reason === 'disabled') {
+                              setMessage('该闹钟当前为关闭状态，请先开启后再恢复“待服药”。')
+                              return
+                            }
+                            setMessage('当前状态无法恢复为待服药，请稍后重试。')
+                            return
+                          }
+                          setMessage(`${rule.medication?.drugName || '当前药品'} 已恢复为待服药，将继续提醒。`)
+                        }}
+                        className="mt-1 block w-full rounded-lg px-2 py-1 text-left text-xs text-slate-700 hover:bg-slate-100"
+                      >
+                        恢复待服药
                       </button>
                     </div>
                   </details>
