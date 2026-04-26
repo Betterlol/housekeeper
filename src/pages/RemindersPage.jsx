@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react'
 import MedicalIcon from '../components/MedicalIcon'
+import PageSurface from '../components/common/PageSurface'
 import useStoreSnapshot from '../hooks/useStoreSnapshot'
 import {
   addReminderRule,
@@ -149,7 +150,7 @@ export default function RemindersPage() {
   }
 
   return (
-    <section className="space-y-4">
+    <PageSurface variant="reminders" className="space-y-4">
       <article className="rounded-3xl bg-gradient-to-br from-cyan-600 via-medical-600 to-emerald-600 p-5 text-white shadow-[0_18px_36px_-24px_rgba(15,118,110,0.58)]">
         <div className="flex items-start justify-between gap-2">
           <div>
@@ -458,6 +459,6 @@ export default function RemindersPage() {
           </form>
         </div>
       ) : null}
-    </section>
+    </PageSurface>
   )
 }

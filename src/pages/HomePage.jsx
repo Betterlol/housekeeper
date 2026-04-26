@@ -27,6 +27,7 @@ import HealthMetricsSection from '../features/home/HealthMetricsSection'
 import ReminderCenterSection from '../features/home/ReminderCenterSection'
 import OnboardingEntryCard from '../features/home/OnboardingEntryCard'
 import OnboardingGuideModal from '../features/home/OnboardingGuideModal'
+import PageSurface from '../components/common/PageSurface'
 import { onboardingSteps } from '../features/home/constants'
 import {
   getTimelineState,
@@ -242,9 +243,7 @@ export default function HomePage() {
 
   return (
     <>
-      <section className="relative space-y-5 pb-3">
-        <div className="home-page-bg pointer-events-none absolute inset-x-0 -top-4 -z-10 h-[calc(100%+2rem)] rounded-[32px]" />
-
+      <PageSurface variant="home" className="space-y-5 pb-3">
         <HeroSection
           userName={userName}
           greeting={getGreeting()}
@@ -275,7 +274,7 @@ export default function HomePage() {
         {/* <AiAssistantSection aiSuggestion={aiSuggestion} adherenceData={adherenceData} trendData={trendData} /> */}
         <HealthMetricsSection metricsCards={metricsCards} />
         <ReminderCenterSection statusCount={statusCount} nextReminder={nextReminder} />
-      </section>
+      </PageSurface>
 
       <OnboardingGuideModal
         open={guideOpen}

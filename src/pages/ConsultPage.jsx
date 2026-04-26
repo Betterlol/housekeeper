@@ -20,6 +20,7 @@ import ConsultChatEntry from '../features/consult/ConsultChatEntry'
 import ConsultActionCenter from '../features/consult/ConsultActionCenter'
 import ConsultDoctorReportCard from '../features/consult/ConsultDoctorReportCard'
 import ConsultSendDoctorModal from '../features/consult/ConsultSendDoctorModal'
+import PageSurface from '../components/common/PageSurface'
 import {
   buildRiskItems,
   buildRiskMeta,
@@ -242,44 +243,50 @@ export default function ConsultPage() {
   }
 
   return (
-    <section className="space-y-5 pb-2">
-      <ConsultHeroCockpit
-        analysisComplete={analysisComplete}
-        riskMeta={riskMeta}
-        summary={summary}
-        weekWindowLabel={getWeekWindowLabel()}
-      />
+    <section className="relative pb-2">
+      <PageSurface
+        variant="consult"
+        className="relative z-10 space-y-5 pt-4"
+        surfaceInsetClassName="inset-x-0 top-8 h-[calc(100%-0.25rem)]"
+      >
+        <ConsultHeroCockpit
+          analysisComplete={analysisComplete}
+          riskMeta={riskMeta}
+          summary={summary}
+          weekWindowLabel={getWeekWindowLabel()}
+        />
 
-      {pageTip ? (
-        <article className="rounded-xl border border-cyan-100 bg-cyan-50 px-3 py-2 text-xs text-cyan-700">
-          {pageTip}
-        </article>
-      ) : null}
+        {pageTip ? (
+          <article className="rounded-xl border border-cyan-100 bg-cyan-50 px-3 py-2 text-xs text-cyan-700">
+            {pageTip}
+          </article>
+        ) : null}
 
-      <ConsultRiskConsole
-        items={riskItems}
-        onAction={handleNavigateAction}
-        resolvedIds={activeResolvedRiskIds}
-        onResolve={handleResolveRisk}
-      />
-      <ConsultBehaviorAnalysis trend={trend} buckets={timeBuckets} />
-      <ConsultSummaryCard
-        points={summaryPoints}
-        doctorQuestions={(doctorReport.communicationFocus || []).slice(0, 3)}
-        copyStatus={copyStatus}
-        onCopy={handleCopySummary}
-        onSendDoctor={handleSendDoctor}
-      />
-      <ConsultChatEntry onAsk={handleAsk} messages={chatMessages} isLoading={chatLoading} />
-      <ConsultActionCenter actions={actionCards} onAction={handleNavigateAction} />
-      <ConsultDoctorReportCard doctorReport={doctorReport} />
+        <ConsultRiskConsole
+          items={riskItems}
+          onAction={handleNavigateAction}
+          resolvedIds={activeResolvedRiskIds}
+          onResolve={handleResolveRisk}
+        />
+        <ConsultBehaviorAnalysis trend={trend} buckets={timeBuckets} />
+        <ConsultSummaryCard
+          points={summaryPoints}
+          doctorQuestions={(doctorReport.communicationFocus || []).slice(0, 3)}
+          copyStatus={copyStatus}
+          onCopy={handleCopySummary}
+          onSendDoctor={handleSendDoctor}
+        />
+        <ConsultChatEntry onAsk={handleAsk} messages={chatMessages} isLoading={chatLoading} />
+        <ConsultActionCenter actions={actionCards} onAction={handleNavigateAction} />
+        <ConsultDoctorReportCard doctorReport={doctorReport} />
 
-      <ConsultSendDoctorModal
-        open={sendModalOpen}
-        onClose={() => setSendModalOpen(false)}
-        onConfirm={handleConfirmSendDoctor}
-        sending={sendLoading}
-      />
+        <ConsultSendDoctorModal
+          open={sendModalOpen}
+          onClose={() => setSendModalOpen(false)}
+          onConfirm={handleConfirmSendDoctor}
+          sending={sendLoading}
+        />
+      </PageSurface>
     </section>
   )
 }

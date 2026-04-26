@@ -13,6 +13,7 @@ import ProfileListSection from '../components/profile/ProfileListSection'
 import ProfileDemoModeCard from '../components/profile/ProfileDemoModeCard'
 import ProfileEditSheet from '../components/profile/ProfileEditSheet'
 import ProfileReportImportSheet from '../components/profile/ProfileReportImportSheet'
+import PageSurface from '../components/common/PageSurface'
 
 const reportParseHints = [
   '正在识别报告结构与检验指标...',
@@ -331,7 +332,7 @@ export default function ProfilePage() {
   }
 
   return (
-    <section className="space-y-4 pb-2">
+    <PageSurface variant="profile" className="space-y-4 pb-2">
       <header className="px-1">
         <h1 className="text-xl font-semibold text-slate-900">个人健康账户</h1>
         <p className="mt-1 text-sm text-slate-500">慢病管理档案、健康数据入口与系统设置</p>
@@ -395,6 +396,6 @@ export default function ProfilePage() {
         onStartParse={startMockParse}
         onConfirm={confirmReportImport}
       />
-    </section>
+    </PageSurface>
   )
 }

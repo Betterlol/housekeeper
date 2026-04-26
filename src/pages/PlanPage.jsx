@@ -28,6 +28,7 @@ import PlanMedicationCard from '../features/plan/PlanMedicationCard'
 import PlanActionSheet from '../features/plan/PlanActionSheet'
 import PlanMedicationEditorSheet from '../features/plan/PlanMedicationEditorSheet'
 import PlanPrescriptionImportSheet from '../features/plan/PlanPrescriptionImportSheet'
+import PageSurface from '../components/common/PageSurface'
 
 export default function PlanPage() {
   const navigate = useNavigate()
@@ -241,7 +242,7 @@ export default function PlanPage() {
   }
 
   return (
-    <section className="space-y-4 pb-2">
+    <PageSurface variant="plan" className="space-y-4 pb-2">
       <PlanHeader onImport={openImportSheet} onCreate={openCreate} />
       <PlanOverviewCards summary={summary} />
       <PlanInsightBanner insight={topInsight} onClick={handleInsightClick} />
@@ -319,6 +320,6 @@ export default function PlanPage() {
         onClose={handleCloseAction}
         onAction={handleAction}
       />
-    </section>
+    </PageSurface>
   )
 }
