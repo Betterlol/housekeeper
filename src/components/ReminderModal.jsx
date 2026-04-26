@@ -21,8 +21,8 @@ export default function ReminderModal({
   if (!reminders || reminders.length === 0) return null
 
   return (
-    <div className="fixed inset-0 z-50 reminder-overlay flex items-end justify-center bg-slate-900/45 p-3 backdrop-blur-sm">
-      <div className="reminder-sheet max-h-[88vh] w-full max-w-md overflow-y-auto rounded-3xl bg-white p-4 shadow-[0_30px_60px_-24px_rgba(2,132,199,0.65)]">
+    <div className="sheet-overlay sheet-overlay-bottom reminder-overlay z-50">
+      <div className="sheet-panel reminder-sheet shadow-[0_30px_60px_-24px_rgba(2,132,199,0.65)]">
         <div className="mb-3 flex items-center justify-between">
           <div>
             <p className="text-xs text-medical-600">智能用药提醒</p>

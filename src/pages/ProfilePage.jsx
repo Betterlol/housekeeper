@@ -268,10 +268,10 @@ export default function ProfilePage() {
       </article>
 
       {editorOpen ? (
-        <div className="fixed inset-0 z-40 flex items-end justify-center bg-slate-900/45 p-3 backdrop-blur-sm">
+        <div className="sheet-overlay z-40">
           <form
             onSubmit={handleSaveProfile}
-            className="max-h-[88vh] w-full max-w-md overflow-y-auto rounded-3xl bg-white p-4 shadow-2xl"
+            className="sheet-panel"
           >
             <div className="mb-3 flex items-center justify-between">
               <p className="text-base font-semibold text-slate-900">编辑慢病档案</p>
@@ -353,8 +353,8 @@ export default function ProfilePage() {
       ) : null}
 
       {reportOpen ? (
-        <div className="fixed inset-0 z-40 flex items-end justify-center bg-slate-900/45 p-3 backdrop-blur-sm">
-          <div className="max-h-[88vh] w-full max-w-md overflow-y-auto rounded-3xl bg-white p-4 shadow-2xl">
+        <div className="sheet-overlay z-40">
+          <div className="sheet-panel">
             <div className="mb-3 flex items-center justify-between">
               <p className="text-base font-semibold text-slate-900">导入报告（AI解析演示）</p>
               <button

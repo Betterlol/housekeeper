@@ -12,7 +12,7 @@ const tabs = [
 
 export default function TabBar() {
   return (
-    <nav className="fixed bottom-0 left-0 right-0 z-20 mx-auto w-full max-w-md border-t border-medical-100 bg-white/95 px-1 pb-4 pt-2 shadow-2xl backdrop-blur">
+    <nav className="fixed bottom-0 left-0 right-0 z-30 mx-auto w-full max-w-[560px] border-t border-medical-100 bg-white/95 px-1 pb-[calc(0.75rem+env(safe-area-inset-bottom))] pt-2 shadow-2xl backdrop-blur">
       <ul className="grid grid-cols-6 gap-1">
         {tabs.map((tab) => (
           <li key={tab.to}>

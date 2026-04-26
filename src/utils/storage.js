@@ -1607,6 +1607,17 @@ function buildDefenseDemoStore() {
   const now = new Date()
   const todayKey = toDateKey(now)
   const dayKeys = Array.from({ length: 7 }).map((_, index) => toDateKey(addDays(now, -6 + index)))
+  const toRuleTimeFromNow = (minutes) => {
+    const target = new Date(now.getTime() + Number(minutes || 0) * 60 * 1000)
+
+    // ReminderRule stores only HH:mm; if offset crosses to next day, fallback to current time
+    // to avoid "today 08:00 but says a few minutes later" style mismatch in demo mode.
+    if (toDateKey(target) !== todayKey) {
+      return `${pad2(now.getHours())}:${pad2(now.getMinutes())}`
+    }
+
+    return `${pad2(target.getHours())}:${pad2(target.getMinutes())}`
+  }
 
   const medications = [
     normalizeMedication({
@@ -1654,7 +1665,7 @@ function buildDefenseDemoStore() {
     normalizeReminderRule({
       id: 'rule-1',
       medicationId: 'med-1',
-      time: '08:00',
+      time: toRuleTimeFromNow(2),
       enabled: true,
       repeatDays: DEFAULT_REPEAT_DAYS,
       retryIntervalMinutes: 5,
@@ -1663,7 +1674,7 @@ function buildDefenseDemoStore() {
     normalizeReminderRule({
       id: 'rule-2',
       medicationId: 'med-2',
-      time: '08:00',
+      time: toRuleTimeFromNow(6),
       enabled: true,
       repeatDays: DEFAULT_REPEAT_DAYS,
       retryIntervalMinutes: 10,
@@ -1672,7 +1683,7 @@ function buildDefenseDemoStore() {
     normalizeReminderRule({
       id: 'rule-3',
       medicationId: 'med-2',
-      time: '20:00',
+      time: toRuleTimeFromNow(22),
       enabled: true,
       repeatDays: DEFAULT_REPEAT_DAYS,
       retryIntervalMinutes: 10,
@@ -1681,7 +1692,7 @@ function buildDefenseDemoStore() {
     normalizeReminderRule({
       id: 'rule-4',
       medicationId: 'med-3',
-      time: '21:00',
+      time: toRuleTimeFromNow(38),
       enabled: true,
       repeatDays: DEFAULT_REPEAT_DAYS,
       retryIntervalMinutes: 15,
@@ -1719,16 +1730,14 @@ function buildDefenseDemoStore() {
         if (rule.id === 'rule-1') {
           visibleStatus = 'taken'
           internalStatus = 'completed'
-          completedAt = toDateTime(todayKey, '08:03')
+          completedAt = toDateTime(todayKey, rule.time)
         } else if (rule.id === 'rule-2') {
           visibleStatus = 'pending'
           internalStatus = 'waiting'
-          currentTriggerAt = addMinutesToNow(3)
           completedAt = ''
         } else if (rule.id === 'rule-3') {
           visibleStatus = 'pending'
           internalStatus = 'waiting'
-          currentTriggerAt = addMinutesToNow(25)
           completedAt = ''
         } else if (rule.id === 'rule-4') {
           visibleStatus = 'skipped'

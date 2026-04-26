@@ -84,6 +84,34 @@ body {
   animation: reminder-sheet-pop 0.24s ease-out;
 }
 
+.sheet-overlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  padding-bottom: calc(1rem + env(safe-area-inset-bottom));
+  background: rgba(15, 23, 42, 0.45);
+  backdrop-filter: blur(4px);
+}
+
+.sheet-overlay-bottom {
+  align-items: flex-end;
+}
+
+.sheet-panel {
+  width: 100%;
+  max-width: 560px;
+  max-height: calc(100vh - 2rem - env(safe-area-inset-bottom));
+  overflow-y: auto;
+  border-radius: 1.5rem;
+  background: #fff;
+  padding: 1rem;
+  padding-bottom: calc(1rem + env(safe-area-inset-bottom));
+  box-shadow: 0 24px 60px -28px rgba(15, 23, 42, 0.5);
+}
+
 @keyframes home-shimmer {
   0% {
     background-position: -200% 0;

@@ -13,8 +13,8 @@ export default function OnboardingGuideModal({
   if (!open) return null
 
   return (
-    <div className="fixed inset-0 z-40 flex items-end justify-center bg-slate-900/45 p-3 backdrop-blur-sm">
-      <article className="w-full max-w-md rounded-3xl bg-white p-4 shadow-2xl">
+    <div className="sheet-overlay z-40">
+      <article className="sheet-panel">
         <div className="flex items-center justify-between">
           <p className="text-base font-semibold text-slate-900">首次使用引导</p>
           <span className="rounded-full bg-medical-100 px-2 py-1 text-xs font-medium text-medical-700">
