@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import MedicalIcon from '../components/MedicalIcon'
 import useStoreSnapshot from '../hooks/useStoreSnapshot'
@@ -89,6 +89,7 @@ export default function HomePage() {
 
   const [guideOpen, setGuideOpen] = useState(false)
   const [guideSkippedInSession, setGuideSkippedInSession] = useState(false)
+  const previousCompletedRef = useRef(0)
 
   const todayReminders = getTodayReminderItemsFromStore(store, getTodayDateKey())
   const onboardingProgress = useMemo(() => getOnboardingProgress(store), [store])
@@ -142,6 +143,28 @@ export default function HomePage() {
       setGuideOpen(true)
     }
   }, [shouldAutoShowOnboarding, guideSkippedInSession])
+
+  useEffect(() => {
+    const previousCompleted = previousCompletedRef.current
+    const currentCompleted = onboardingProgress.completedCount
+
+    if (
+      currentCompleted > previousCompleted
+      && !onboardingProgress.onboardingCompleted
+      && !onboardingProgress.onboardingDismissed
+      && demoMode !== 'defense'
+    ) {
+      setGuideOpen(true)
+      setGuideSkippedInSession(false)
+    }
+
+    previousCompletedRef.current = currentCompleted
+  }, [
+    onboardingProgress.completedCount,
+    onboardingProgress.onboardingCompleted,
+    onboardingProgress.onboardingDismissed,
+    demoMode,
+  ])
 
   const loopSteps = [
     {
