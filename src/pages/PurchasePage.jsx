@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import MedicalIcon from '../components/MedicalIcon'
 import useStoreSnapshot from '../hooks/useStoreSnapshot'
 import { getPurchaseInsights } from '../utils/insights'
-import { updateMedicationStock } from '../utils/storage'
+import { markExperienceVisited, updateMedicationStock } from '../utils/storage'
 
 const matchingHints = [
   '正在分析当前用药计划...',
@@ -39,6 +39,10 @@ export default function PurchasePage() {
 
   const store = useStoreSnapshot()
   const purchaseInsights = useMemo(() => getPurchaseInsights(store), [store])
+
+  useEffect(() => {
+    markExperienceVisited('purchase')
+  }, [])
 
   const signature = useMemo(() => {
     const meds = (store.medications || [])

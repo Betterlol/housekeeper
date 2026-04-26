@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import MedicalIcon from '../components/MedicalIcon'
 import useStoreSnapshot from '../hooks/useStoreSnapshot'
 import {
@@ -9,6 +9,7 @@ import {
   getSevenDayTrendData,
   getWeekWindowLabel,
 } from '../utils/insights'
+import { markExperienceVisited } from '../utils/storage'
 
 function copyByExecCommand(text) {
   const input = document.createElement('textarea')
@@ -27,6 +28,10 @@ export default function ConsultPage() {
   const [copyStatus, setCopyStatus] = useState('')
 
   const store = useStoreSnapshot({ ensureToday: true })
+
+  useEffect(() => {
+    markExperienceVisited('consult')
+  }, [])
 
   const summary = getConsultSummary(store)
   const lateNightMissed = getLateNightMissedCount(store)

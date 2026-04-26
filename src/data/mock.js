@@ -142,6 +142,10 @@ export const mockStore = {
     },
   ],
   reminderQueue: [],
+  experienceState: {
+    consultViewed: false,
+    purchaseViewed: false,
+  },
   userProfile: {
     name: '张先生',
     age: 58,

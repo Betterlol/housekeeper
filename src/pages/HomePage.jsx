@@ -1,4 +1,4 @@
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import MedicalIcon from '../components/MedicalIcon'
 import useStoreSnapshot from '../hooks/useStoreSnapshot'
 import {
@@ -31,6 +31,18 @@ const statusLabel = {
   missed: '已漏服',
 }
 
+const guideStateStyle = {
+  completed: 'bg-emerald-100 text-emerald-700',
+  current: 'bg-medical-100 text-medical-700',
+  todo: 'bg-slate-100 text-slate-600',
+}
+
+const guideStateLabel = {
+  completed: '已完成',
+  current: '当前推荐',
+  todo: '未完成',
+}
+
 function formatTime(iso) {
   if (!iso) return '--:--'
   return iso.slice(11, 16)
@@ -46,6 +58,7 @@ function formatDistance(targetIso) {
 }
 
 export default function HomePage() {
+  const navigate = useNavigate()
   const store = useStoreSnapshot({ ensureToday: true })
   const todayReminders = getTodayReminderItemsFromStore(store, getTodayDateKey())
 
@@ -66,6 +79,58 @@ export default function HomePage() {
   const metrics = getMockHealthMetrics(adherenceData.adherence)
   const aiSuggestion = getAiSuggestion(store)
   const refill = getUpcomingRefill(store)
+  const experienceState = store.experienceState || {}
+
+  const importedPrescription = (store.medications || []).some(
+    (medication) => medication.sourceLabel === '处方导入'
+  )
+
+  const createdReminders = (store.reminderRules || []).length > 0
+
+  const completedIntake = (store.intakeLogs || []).some((log) => log.status === 'taken')
+    || (store.reminderInstances || []).some((instance) => instance.visibleStatus === 'taken')
+
+  const guideTasks = [
+    {
+      key: 'import',
+      title: '导入处方',
+      description: '体验 AI 自动识别药品与剂量',
+      completed: importedPrescription,
+      route: '/plan',
+    },
+    {
+      key: 'reminder',
+      title: '生成提醒',
+      description: '自动创建用药闹钟',
+      completed: createdReminders,
+      route: '/reminders',
+    },
+    {
+      key: 'intake',
+      title: '完成一次服药',
+      description: '体验真实用药提醒流程',
+      completed: completedIntake,
+      route: '/home',
+    },
+    {
+      key: 'consult',
+      title: '查看 AI复诊摘要',
+      description: '生成医生可读复诊报告',
+      completed: Boolean(experienceState.consultViewed),
+      route: '/consult',
+    },
+    {
+      key: 'purchase',
+      title: '查看购药建议',
+      description: '体验库存分析与智能补货',
+      completed: Boolean(experienceState.purchaseViewed),
+      route: '/purchase',
+    },
+  ]
+
+  const completedGuideCount = guideTasks.filter((task) => task.completed).length
+  const currentGuideTask = guideTasks.find((task) => !task.completed) || null
+  const guideProgress = Math.round((completedGuideCount / guideTasks.length) * 100)
 
   const loopSteps = [
     {
@@ -94,6 +159,21 @@ export default function HomePage() {
     },
   ]
 
+  const handleGuideClick = (task) => {
+    if (task.key === 'intake') {
+      const section = document.getElementById('today-reminder-tasks')
+      if (section) {
+        section.scrollIntoView({
+          behavior: 'smooth',
+          block: 'start',
+        })
+      }
+      return
+    }
+
+    navigate(task.route)
+  }
+
   return (
     <section className="space-y-4">
       <article className="rounded-3xl bg-gradient-to-br from-medical-700 via-medical-600 to-cyan-600 p-5 text-white shadow-[0_20px_40px_-18px_rgba(15,118,110,0.85)]">
@@ -116,6 +196,71 @@ export default function HomePage() {
             <p className="text-[11px] text-cyan-100">已漏服</p>
             <p className="mt-1 text-lg font-semibold">{statusCount.missed}</p>
           </div>
+        </div>
+      </article>
+
+      <article className="rounded-2xl border border-medical-100 bg-gradient-to-br from-white via-cyan-50/70 to-medical-50 p-4 shadow-[0_14px_30px_-20px_rgba(15,118,110,0.55)]">
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="text-sm font-semibold text-slate-900">今日健康任务</p>
+            <p className="mt-1 text-xs text-slate-500">新用户推荐按步骤体验完整闭环流程</p>
+          </div>
+          <span className="rounded-full bg-medical-100 px-2 py-1 text-xs font-medium text-medical-700">
+            {completedGuideCount}/{guideTasks.length}
+          </span>
+        </div>
+
+        <div className="mt-3 h-2 rounded-full bg-slate-100">
+          <div
+            className="h-2 rounded-full bg-gradient-to-r from-medical-500 to-cyan-500 transition-all duration-500"
+            style={{ width: `${guideProgress}%` }}
+          />
+        </div>
+
+        {currentGuideTask ? (
+          <p className="mt-2 text-xs text-medical-700">推荐下一步：{currentGuideTask.title}</p>
+        ) : (
+          <div className="mt-2 rounded-xl border border-emerald-100 bg-emerald-50 p-3 text-xs text-emerald-700">
+            <p className="font-semibold">今日健康流程已体验完成</p>
+            <p className="mt-1">AI健康管理已启用 · 用药提醒运行中 · 购药监测运行中</p>
+          </div>
+        )}
+
+        <div className="mt-3 space-y-2">
+          {guideTasks.map((task, index) => {
+            const state = task.completed
+              ? 'completed'
+              : currentGuideTask?.key === task.key
+                ? 'current'
+                : 'todo'
+
+            return (
+              <button
+                key={task.key}
+                type="button"
+                onClick={() => handleGuideClick(task)}
+                className="flex w-full items-center justify-between rounded-xl bg-white/80 px-3 py-2 text-left transition hover:bg-white"
+              >
+                <div className="flex items-start gap-2">
+                  <span
+                    className={`mt-0.5 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[11px] font-semibold ${
+                      task.completed ? 'bg-emerald-500 text-white' : 'bg-slate-200 text-slate-600'
+                    } ${state === 'current' ? 'animate-pulse' : ''}`}
+                  >
+                    {task.completed ? '✓' : index + 1}
+                  </span>
+                  <div>
+                    <p className="text-xs font-semibold text-slate-800">{task.title}</p>
+                    <p className="mt-0.5 text-[11px] text-slate-500">{task.description}</p>
+                  </div>
+                </div>
+
+                <span className={`rounded-full px-2 py-1 text-[11px] ${guideStateStyle[state]}`}>
+                  {guideStateLabel[state]}
+                </span>
+              </button>
+            )
+          })}
         </div>
       </article>
 
@@ -221,7 +366,7 @@ export default function HomePage() {
         </Link>
       </div>
 
-      <section className="space-y-3">
+      <section id="today-reminder-tasks" className="space-y-3">
         <h2 className="text-sm font-semibold text-slate-900">今日提醒任务</h2>
         {todayReminders.map((item) => (
           <article key={item.id} className="rounded-2xl bg-white p-4 shadow-[0_14px_30px_-22px_rgba(15,23,42,0.9)]">
