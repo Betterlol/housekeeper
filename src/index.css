@@ -22,6 +22,26 @@ body {
   min-height: 100vh;
 }
 
+.app-shell-bg {
+  background:
+    radial-gradient(circle at 8% 6%, rgba(20, 184, 166, 0.2), transparent 32%),
+    radial-gradient(circle at 92% 14%, rgba(14, 165, 233, 0.18), transparent 34%),
+    linear-gradient(180deg, rgba(236, 254, 255, 0.94) 0%, rgba(248, 250, 252, 0.92) 40%, rgba(255, 255, 255, 0.95) 100%);
+}
+
+.home-page-bg {
+  background:
+    linear-gradient(180deg, rgba(240, 253, 250, 0.58) 0%, rgba(248, 250, 252, 0.42) 32%, rgba(255, 255, 255, 0.2) 100%),
+    repeating-linear-gradient(
+      135deg,
+      rgba(20, 184, 166, 0.02) 0px,
+      rgba(20, 184, 166, 0.02) 11px,
+      rgba(255, 255, 255, 0.01) 11px,
+      rgba(255, 255, 255, 0.01) 22px
+    );
+  border: 1px solid rgba(255, 255, 255, 0.55);
+}
+
 @keyframes reminder-overlay-fade {
   from {
     opacity: 0;
