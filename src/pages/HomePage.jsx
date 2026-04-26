@@ -38,6 +38,12 @@ const statusLabel = {
 
 const onboardingSteps = [
   {
+    key: 'profile',
+    title: '导入档案',
+    description: '前往“我的”页面点击“导入报告”，完善慢病档案与关键健康指标。',
+    route: '/profile',
+  },
+  {
     key: 'import',
     title: '导入处方',
     description: '前往用药计划，点击“导入处方”，体验 AI 自动识别药品与剂量。',
@@ -89,7 +95,7 @@ export default function HomePage() {
 
   const [guideOpen, setGuideOpen] = useState(false)
   const [guideSkippedInSession, setGuideSkippedInSession] = useState(false)
-  const previousCompletedRef = useRef(0)
+  const previousCompletedRef = useRef(null)
 
   const todayReminders = getTodayReminderItemsFromStore(store, getTodayDateKey())
   const onboardingProgress = useMemo(() => getOnboardingProgress(store), [store])
@@ -148,9 +154,13 @@ export default function HomePage() {
     const previousCompleted = previousCompletedRef.current
     const currentCompleted = onboardingProgress.completedCount
 
+    if (previousCompleted === null) {
+      previousCompletedRef.current = currentCompleted
+      return
+    }
+
     if (
       currentCompleted > previousCompleted
-      && !onboardingProgress.onboardingCompleted
       && !onboardingProgress.onboardingDismissed
       && demoMode !== 'defense'
     ) {
@@ -212,6 +222,11 @@ export default function HomePage() {
   const handleGoComplete = () => {
     if (!activeStepData) return
 
+    if (onboardingProgress.onboardingCompleted) {
+      setGuideOpen(false)
+      return
+    }
+
     if (activeStepData.key === 'intake') {
       setGuideOpen(false)
       const section = document.getElementById('today-reminder-tasks')
@@ -229,6 +244,11 @@ export default function HomePage() {
   }
 
   const handleNextStep = () => {
+    if (onboardingProgress.onboardingCompleted) {
+      setGuideOpen(false)
+      return
+    }
+
     const nextStep = Math.min(activeOnboardingStep + 1, onboardingSteps.length - 1)
     setCurrentOnboardingStep(nextStep)
   }
@@ -259,7 +279,7 @@ export default function HomePage() {
           </div>
         </article>
 
-        {demoMode !== 'defense' && !onboardingProgress.onboardingCompleted ? (
+        {demoMode !== 'defense' && !onboardingProgress.onboardingDismissed ? (
           <button
             type="button"
             onClick={openGuide}
@@ -267,7 +287,9 @@ export default function HomePage() {
           >
             <p className="text-xs font-semibold text-medical-700">首次使用引导</p>
             <p className="mt-1 text-xs text-slate-500">
-              当前进度 {Math.min(activeOnboardingStep + 1, onboardingSteps.length)}/{onboardingSteps.length} · 推荐：{activeStepData?.title || '完成引导'}
+              {onboardingProgress.onboardingCompleted
+                ? '已完成全部引导，点击可查看完成提示'
+                : `当前进度 ${Math.min(activeOnboardingStep + 1, onboardingSteps.length)}/${onboardingSteps.length} · 推荐：${activeStepData?.title || '完成引导'}`}
             </p>
           </button>
         ) : null}
@@ -441,11 +463,22 @@ export default function HomePage() {
             </div>
 
             <div className="mt-4 rounded-2xl border border-medical-100 bg-cyan-50/50 p-3">
-              <p className="text-sm font-semibold text-slate-900">{activeStepData?.title}</p>
-              <p className="mt-1 text-xs leading-5 text-slate-600">{activeStepData?.description}</p>
+              {onboardingProgress.onboardingCompleted ? (
+                <>
+                  <p className="text-sm font-semibold text-emerald-700">恭喜！你已完成新手引导！</p>
+                  <p className="mt-1 text-xs leading-5 text-slate-600">
+                    AI健康管理已启用，你可以继续使用提醒、AI复诊与购药建议完成日常慢病管理。
+                  </p>
+                </>
+              ) : (
+                <>
+                  <p className="text-sm font-semibold text-slate-900">{activeStepData?.title}</p>
+                  <p className="mt-1 text-xs leading-5 text-slate-600">{activeStepData?.description}</p>
+                </>
+              )}
             </div>
 
-            <div className="mt-3 grid grid-cols-5 gap-1">
+            <div className="mt-3 grid grid-cols-6 gap-1">
               {onboardingSteps.map((item, index) => {
                 const isCurrent = index === activeOnboardingStep
                 const isDone = onboardingProgress.stepCompleted[index]
@@ -475,14 +508,14 @@ export default function HomePage() {
                 onClick={handleGoComplete}
                 className="rounded-xl bg-medical-600 px-3 py-2 text-sm font-medium text-white"
               >
-                去完成
+                {onboardingProgress.onboardingCompleted ? '开始使用' : '去完成'}
               </button>
               <button
                 type="button"
                 onClick={handleNextStep}
                 className="rounded-xl bg-slate-100 px-3 py-2 text-sm font-medium text-slate-700"
               >
-                下一步
+                {onboardingProgress.onboardingCompleted ? '关闭' : '下一步'}
               </button>
             </div>
 

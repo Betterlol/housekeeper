@@ -8,7 +8,7 @@ export const INTERNAL_REMINDER_STATUSES = ['waiting', 'ringing', 'snoozed', 'ret
 
 const FINAL_VISIBLE_STATUS_SET = new Set(['taken', 'missed', 'skipped'])
 const DEFAULT_REPEAT_DAYS = [0, 1, 2, 3, 4, 5, 6]
-const ONBOARDING_STEP_COUNT = 5
+const ONBOARDING_STEP_COUNT = 6
 
 const clone = (obj) => JSON.parse(JSON.stringify(obj))
 
@@ -231,12 +231,20 @@ function normalizeExperienceState(state = {}) {
 }
 
 function computeOnboardingProgress(store, experienceState) {
+  const profileImported = Boolean(
+    store.userProfile?.bloodPressure
+    || store.userProfile?.bloodSugar
+    || store.userProfile?.doctorAdvice
+    || store.userProfile?.nextVisitDate
+  )
+
   const importedPrescription = (store.medications || []).some((medication) => medication.sourceLabel === '处方导入')
   const hasReminderRules = (store.reminderRules || []).length > 0
   const hasTaken = (store.intakeLogs || []).some((log) => log.status === 'taken')
     || (store.reminderInstances || []).some((instance) => instance.visibleStatus === 'taken')
 
   const stepCompleted = [
+    profileImported,
     importedPrescription,
     hasReminderRules,
     hasTaken,
