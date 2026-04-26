@@ -184,6 +184,7 @@ export default function PlanPage() {
         stockUnit: '片',
         startDate: new Date().toISOString().slice(0, 10),
         endDate: '',
+        daysLeft: 30,
         sourceLabel: '处方导入',
       })
 

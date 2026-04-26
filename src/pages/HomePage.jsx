@@ -22,7 +22,7 @@ import {
 import HeroSection from '../features/home/HeroSection'
 import TimelineSection from '../features/home/TimelineSection'
 import JourneySection from '../features/home/JourneySection'
-import AiAssistantSection from '../features/home/AiAssistantSection'
+// import AiAssistantSection from '../features/home/AiAssistantSection'
 import HealthMetricsSection from '../features/home/HealthMetricsSection'
 import ReminderCenterSection from '../features/home/ReminderCenterSection'
 import OnboardingEntryCard from '../features/home/OnboardingEntryCard'
@@ -272,7 +272,7 @@ export default function HomePage() {
         />
 
         <JourneySection journeySteps={journeySteps} refill={refill} />
-        <AiAssistantSection aiSuggestion={aiSuggestion} adherenceData={adherenceData} trendData={trendData} />
+        {/* <AiAssistantSection aiSuggestion={aiSuggestion} adherenceData={adherenceData} trendData={trendData} /> */}
         <HealthMetricsSection metricsCards={metricsCards} />
         <ReminderCenterSection statusCount={statusCount} nextReminder={nextReminder} />
       </section>
