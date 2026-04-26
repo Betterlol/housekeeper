@@ -83,9 +83,9 @@ const iconMap = {
   ),
 };
 
-export default function MedicalIcon({ name, className = 'h-5 w-5' }) {
+export default function MedicalIcon({ name, className = 'h-5 w-5', ...rest }) {
   return (
-    <svg viewBox="0 0 24 24" className={className} aria-hidden="true">
+    <svg viewBox="0 0 24 24" className={className} aria-hidden="true" {...rest}>
       {iconMap[name] || iconMap.home}
     </svg>
   );

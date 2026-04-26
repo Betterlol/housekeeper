@@ -1,42 +1,169 @@
 import { useEffect, useMemo, useState } from 'react'
-import MedicalIcon from '../components/MedicalIcon'
+import { useNavigate } from 'react-router-dom'
 import useStoreSnapshot from '../hooks/useStoreSnapshot'
 import {
   buildConsultCopyText,
   getConsultSummary,
   getDoctorReadableReport,
   getLateNightMissedCount,
+  getRecentLogs,
   getSevenDayTrendData,
+  getUpcomingRefill,
   getWeekWindowLabel,
 } from '../utils/insights'
 import { markExperienceVisited } from '../utils/storage'
+import ConsultHeroCockpit from '../features/consult/ConsultHeroCockpit'
+import ConsultRiskConsole from '../features/consult/ConsultRiskConsole'
+import ConsultBehaviorAnalysis from '../features/consult/ConsultBehaviorAnalysis'
+import ConsultSummaryCard from '../features/consult/ConsultSummaryCard'
+import ConsultChatEntry from '../features/consult/ConsultChatEntry'
+import ConsultActionCenter from '../features/consult/ConsultActionCenter'
+import ConsultDoctorReportCard from '../features/consult/ConsultDoctorReportCard'
+import ConsultSendDoctorModal from '../features/consult/ConsultSendDoctorModal'
+import {
+  buildRiskItems,
+  buildRiskMeta,
+  buildSummaryPoints,
+  buildTimeDistribution,
+  copyByExecCommand,
+} from '../features/consult/helpers'
 
-function copyByExecCommand(text) {
-  const input = document.createElement('textarea')
-  input.value = text
-  input.setAttribute('readonly', 'true')
-  input.style.position = 'fixed'
-  input.style.left = '-9999px'
-  document.body.appendChild(input)
-  input.select()
-  const result = document.execCommand('copy')
-  document.body.removeChild(input)
-  return result
+const CONSULT_RISK_RESOLVED_KEY = 'consult-risk-resolved-v1'
+
+function buildAskReply(question, summary, refill) {
+  if (question.includes('漏服') || question.includes('忘记')) {
+    return `你近7日依从率为 ${summary.adherence}%，建议先把晚间提醒提前 20 分钟，并开启连续提醒，降低漏服概率。`
+  }
+
+  if (question.includes('头晕')) {
+    return '建议记录头晕发生时间、持续时长和当时血压，并在复诊时与医生确认是否与用药时间有关。'
+  }
+
+  if (question.includes('血压')) {
+    return '建议连续3天记录早晚血压并带去复诊；若持续高于目标值，可与医生评估是否需要调整方案。'
+  }
+
+  if (refill && refill.remainingDays <= 7) {
+    return `${refill.drugName} 当前库存预计可用 ${refill.remainingDays} 天，建议优先完成续方，避免断药。`
+  }
+
+  return '建议继续保持当前节奏，重点观察晚间服药与作息同步性，复诊时携带近7日记录。'
 }
 
 export default function ConsultPage() {
-  const [copyStatus, setCopyStatus] = useState('')
-
+  const navigate = useNavigate()
   const store = useStoreSnapshot({ ensureToday: true })
+
+  const [analysisComplete, setAnalysisComplete] = useState(false)
+  const [copyStatus, setCopyStatus] = useState('')
+  const [pageTip, setPageTip] = useState('')
+  const [resolvedRiskIds, setResolvedRiskIds] = useState(() => {
+    try {
+      const raw = window.localStorage.getItem(CONSULT_RISK_RESOLVED_KEY)
+      const parsed = raw ? JSON.parse(raw) : []
+      return Array.isArray(parsed) ? parsed : []
+    } catch (error) {
+      return []
+    }
+  })
+  const [chatMessages, setChatMessages] = useState([
+    {
+      id: 'ai-welcome',
+      role: 'ai',
+      text: '你好，我是AI复诊助手。可以问我“漏服后怎么补服”“最近头晕怎么处理”等问题。',
+    },
+  ])
+  const [chatLoading, setChatLoading] = useState(false)
+  const [sendModalOpen, setSendModalOpen] = useState(false)
+  const [sendLoading, setSendLoading] = useState(false)
 
   useEffect(() => {
     markExperienceVisited('consult')
   }, [])
 
-  const summary = getConsultSummary(store)
-  const lateNightMissed = getLateNightMissedCount(store)
-  const trend = getSevenDayTrendData(store)
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setAnalysisComplete(true)
+    }, 1600)
+
+    return () => clearTimeout(timer)
+  }, [])
+
+  useEffect(() => {
+    if (!copyStatus && !pageTip) return undefined
+
+    const timer = setTimeout(() => {
+      setCopyStatus('')
+      setPageTip('')
+    }, 2400)
+
+    return () => clearTimeout(timer)
+  }, [copyStatus, pageTip])
+
+  useEffect(() => {
+    window.localStorage.setItem(CONSULT_RISK_RESOLVED_KEY, JSON.stringify(resolvedRiskIds))
+  }, [resolvedRiskIds])
+
+  const summary = useMemo(() => getConsultSummary(store), [store])
+  const lateNightMissed = useMemo(() => getLateNightMissedCount(store), [store])
+  const trend = useMemo(() => getSevenDayTrendData(store), [store])
   const doctorReport = useMemo(() => getDoctorReadableReport(store), [store])
+  const refill = useMemo(() => getUpcomingRefill(store), [store])
+  const recentEvents = useMemo(() => getRecentLogs(store, undefined, 7), [store])
+
+  const riskMeta = useMemo(
+    () => buildRiskMeta(summary, lateNightMissed),
+    [summary, lateNightMissed]
+  )
+  const riskItems = useMemo(
+    () => buildRiskItems({ summary, lateNightMissed, refill }),
+    [summary, lateNightMissed, refill]
+  )
+  const timeBuckets = useMemo(() => buildTimeDistribution(recentEvents), [recentEvents])
+  const summaryPoints = useMemo(
+    () => buildSummaryPoints({ summary, refill }),
+    [summary, refill]
+  )
+  const activeResolvedRiskIds = useMemo(
+    () => resolvedRiskIds.filter((id) => riskItems.some((risk) => risk.id === id)),
+    [resolvedRiskIds, riskItems]
+  )
+
+  const actionCards = [
+    {
+      key: 'visit',
+      icon: 'consult',
+      title: '预约复诊',
+      desc: `建议 ${summary.nextVisitDate} 前完成`,
+      tone: 'emerald',
+      primary: true,
+      target: '/profile',
+    },
+    {
+      key: 'reminder',
+      icon: 'reminder',
+      title: '调整提醒',
+      desc: '优化晚间提醒',
+      tone: 'amber',
+      target: '/reminders',
+    },
+    {
+      key: 'purchase',
+      icon: 'purchase',
+      title: '续方购药',
+      desc: refill ? `剩余${refill.remainingDays}天` : '查看库存',
+      tone: 'blue',
+      target: '/purchase',
+    },
+    {
+      key: 'export',
+      icon: 'plan',
+      title: '导出摘要',
+      desc: '复制到剪贴板',
+      tone: 'slate',
+      action: 'copy',
+    },
+  ]
 
   const handleCopySummary = async () => {
     const text = buildConsultCopyText(store)
@@ -55,130 +182,104 @@ export default function ConsultPage() {
     }
   }
 
+  const handleNavigateAction = (payload) => {
+    if (payload?.target) {
+      navigate(payload.target)
+      return
+    }
+
+    if (payload?.action === 'copy') {
+      handleCopySummary()
+      return
+    }
+
+    setPageTip('该动作为演示能力，暂未接入实际医院系统。')
+  }
+
+  const handleSendDoctor = () => {
+    setSendModalOpen(true)
+  }
+
+  const handleAsk = (question) => {
+    const userMessage = {
+      id: `user-${Date.now()}`,
+      role: 'user',
+      text: question,
+    }
+
+    setChatMessages((prev) => [...prev, userMessage])
+    setChatLoading(true)
+
+    window.setTimeout(() => {
+      const reply = buildAskReply(question, summary, refill)
+      setChatMessages((prev) => [
+        ...prev,
+        {
+          id: `ai-${Date.now()}`,
+          role: 'ai',
+          text: reply,
+        },
+      ])
+      setChatLoading(false)
+    }, 900)
+  }
+
+  const handleResolveRisk = (risk) => {
+    setResolvedRiskIds((prev) => (
+      prev.includes(risk.id)
+        ? prev.filter((item) => item !== risk.id)
+        : [...prev, risk.id]
+    ))
+  }
+
+  const handleConfirmSendDoctor = () => {
+    setSendLoading(true)
+    window.setTimeout(() => {
+      setSendLoading(false)
+      setSendModalOpen(false)
+      setPageTip('复诊摘要已模拟发送给医生。')
+    }, 1000)
+  }
+
   return (
-    <section className="space-y-4">
-      <article className="rounded-3xl bg-gradient-to-br from-sky-700 via-cyan-700 to-teal-700 p-5 text-white shadow-[0_22px_44px_-20px_rgba(3,105,161,0.85)]">
-        <p className="text-xs text-sky-100">互联网医院 · AI复诊摘要</p>
-        <h1 className="mt-1 text-xl font-semibold">慢病复诊报告</h1>
-        <p className="mt-2 text-xs text-sky-100">统计周期：{getWeekWindowLabel()}</p>
-      </article>
+    <section className="space-y-5 pb-2">
+      <ConsultHeroCockpit
+        analysisComplete={analysisComplete}
+        riskMeta={riskMeta}
+        summary={summary}
+        weekWindowLabel={getWeekWindowLabel()}
+      />
 
-      <article className="rounded-2xl bg-white p-4 shadow-[0_14px_30px_-22px_rgba(15,23,42,0.9)]">
-        <p className="text-sm font-semibold text-slate-900">核心指标</p>
-        <div className="mt-3 grid grid-cols-2 gap-2">
-          <div className="rounded-xl bg-slate-50 p-3">
-            <p className="text-xs text-slate-500">用药依从率</p>
-            <p className="mt-1 text-xl font-semibold text-emerald-600">{summary.adherence}%</p>
-          </div>
-          <div className="rounded-xl bg-slate-50 p-3">
-            <p className="text-xs text-slate-500">漏服次数</p>
-            <p className="mt-1 text-xl font-semibold text-rose-600">{summary.missedCount}</p>
-          </div>
-          <div className="rounded-xl bg-slate-50 p-3">
-            <p className="text-xs text-slate-500">晚间漏服</p>
-            <p className="mt-1 text-xl font-semibold text-amber-600">{lateNightMissed}</p>
-          </div>
-          <div className="rounded-xl bg-slate-50 p-3">
-            <p className="text-xs text-slate-500">建议复诊时间</p>
-            <p className="mt-1 text-sm font-semibold text-medical-700">{summary.nextVisitDate}</p>
-          </div>
-        </div>
-      </article>
+      {pageTip ? (
+        <article className="rounded-xl border border-cyan-100 bg-cyan-50 px-3 py-2 text-xs text-cyan-700">
+          {pageTip}
+        </article>
+      ) : null}
 
-      <article className="rounded-2xl bg-white p-4 shadow-[0_14px_30px_-22px_rgba(15,23,42,0.9)]">
-        <div className="mb-2 flex items-center justify-between">
-          <p className="text-sm font-semibold text-slate-900">7日用药趋势</p>
-          <span className="text-[11px] text-slate-500">应服 / 实服 / 漏服 / 依从率</span>
-        </div>
+      <ConsultRiskConsole
+        items={riskItems}
+        onAction={handleNavigateAction}
+        resolvedIds={activeResolvedRiskIds}
+        onResolve={handleResolveRisk}
+      />
+      <ConsultBehaviorAnalysis trend={trend} buckets={timeBuckets} />
+      <ConsultSummaryCard
+        points={summaryPoints}
+        doctorQuestions={(doctorReport.communicationFocus || []).slice(0, 3)}
+        copyStatus={copyStatus}
+        onCopy={handleCopySummary}
+        onSendDoctor={handleSendDoctor}
+      />
+      <ConsultChatEntry onAsk={handleAsk} messages={chatMessages} isLoading={chatLoading} />
+      <ConsultActionCenter actions={actionCards} onAction={handleNavigateAction} />
+      <ConsultDoctorReportCard doctorReport={doctorReport} />
 
-        <div className="space-y-3">
-          {trend.map((day) => {
-            const takenWidth = day.expected === 0 ? 0 : Math.round((day.taken / day.expected) * 100)
-            const missedWidth = day.expected === 0 ? 0 : Math.round((day.missed / day.expected) * 100)
-
-            return (
-              <div key={day.dateKey} className="rounded-xl bg-slate-50 p-3">
-                <div className="mb-1 flex items-center justify-between text-xs">
-                  <span className="font-medium text-slate-700">{day.label}</span>
-                  <span className="text-slate-500">{day.adherence}%</span>
-                </div>
-
-                <div className="flex items-center justify-between text-[11px] text-slate-500">
-                  <span>应服 {day.expected}</span>
-                  <span>实服 {day.taken}</span>
-                  <span>漏服 {day.missed}</span>
-                </div>
-
-                <div className="mt-1 h-2 rounded-full bg-slate-200">
-                  <div className="h-2 rounded-full bg-emerald-500" style={{ width: `${takenWidth}%` }} />
-                </div>
-
-                <div className="mt-1 h-1.5 rounded-full bg-rose-100">
-                  <div className="h-1.5 rounded-full bg-rose-500" style={{ width: `${missedWidth}%` }} />
-                </div>
-              </div>
-            )
-          })}
-        </div>
-      </article>
-
-      <article className="rounded-2xl border border-cyan-100 bg-gradient-to-r from-cyan-50 via-white to-medical-50 p-4 shadow-[0_12px_28px_-20px_rgba(15,118,110,0.7)]">
-        <div className="flex items-start gap-2">
-          <span className="mt-0.5 rounded-lg bg-medical-100 p-1 text-medical-700">
-            <MedicalIcon name="ai" className="h-4 w-4" />
-          </span>
-          <div className="flex-1">
-            <p className="text-sm font-semibold text-slate-900">AI生成问诊摘要</p>
-            <p className="mt-1 text-xs leading-5 text-slate-600">{summary.aiSummary}</p>
-            <p className="mt-2 text-xs text-slate-500">最近漏服日期：{summary.latestMissedDate}</p>
-
-            <button
-              type="button"
-              onClick={handleCopySummary}
-              className="mt-3 rounded-lg bg-medical-600 px-3 py-2 text-xs font-medium text-white transition hover:bg-medical-700"
-            >
-              复制复诊摘要
-            </button>
-
-            {copyStatus ? <p className="mt-2 text-xs text-medical-700">{copyStatus}</p> : null}
-          </div>
-        </div>
-      </article>
-
-      <article className="rounded-2xl bg-white p-4 shadow-[0_14px_30px_-22px_rgba(15,23,42,0.9)]">
-        <p className="text-sm font-semibold text-slate-900">医生可读报告卡片</p>
-
-        <div className="mt-3 space-y-2 text-xs leading-5 text-slate-600">
-          <p>
-            <span className="font-medium text-slate-800">患者基本情况：</span>
-            {doctorReport.profile.name}，{doctorReport.profile.gender}，{doctorReport.profile.age}岁，慢病诊断
-            {(doctorReport.profile.diseases || []).join('、')}。
-          </p>
-          <p>
-            <span className="font-medium text-slate-800">近7日用药依从率：</span>
-            {doctorReport.adherence}% ，总体执行
-            {doctorReport.adherence >= 90 ? '较稳定' : doctorReport.adherence >= 80 ? '中等' : '偏低'}。
-          </p>
-          <p>
-            <span className="font-medium text-slate-800">漏服风险：</span>
-            {doctorReport.missedRisk}，{doctorReport.missedRiskDesc}
-          </p>
-          <p>
-            <span className="font-medium text-slate-800">不良反应：</span>
-            {doctorReport.adverseText}
-          </p>
-          <p>
-            <span className="font-medium text-slate-800">续方建议：</span>
-            {doctorReport.refillAdvice}
-          </p>
-          <p>
-            <span className="font-medium text-slate-800">医生沟通重点：</span>
-          </p>
-          <p>1. {doctorReport.communicationFocus[0]}</p>
-          <p>2. {doctorReport.communicationFocus[1]}</p>
-          <p>3. {doctorReport.communicationFocus[2]}</p>
-        </div>
-      </article>
+      <ConsultSendDoctorModal
+        open={sendModalOpen}
+        onClose={() => setSendModalOpen(false)}
+        onConfirm={handleConfirmSendDoctor}
+        sending={sendLoading}
+      />
     </section>
   )
 }
