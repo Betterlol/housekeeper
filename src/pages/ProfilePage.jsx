@@ -1,11 +1,17 @@
 import { useEffect, useMemo, useState } from 'react'
-import PageHeader from '../components/PageHeader'
 import useStoreSnapshot from '../hooks/useStoreSnapshot'
 import {
   clearStoreForDemo,
   generateDefenseDemoData,
+  getTodayDateKey,
   updateUserProfile,
 } from '../utils/storage'
+import ProfileAccountCard from '../components/profile/ProfileAccountCard'
+import ProfileArchiveCard from '../components/profile/ProfileArchiveCard'
+import ProfileListSection from '../components/profile/ProfileListSection'
+import ProfileDemoModeCard from '../components/profile/ProfileDemoModeCard'
+import ProfileEditSheet from '../components/profile/ProfileEditSheet'
+import ProfileReportImportSheet from '../components/profile/ProfileReportImportSheet'
 
 const reportParseHints = [
   '正在识别报告结构与检验指标...',
@@ -13,9 +19,103 @@ const reportParseHints = [
   '正在生成复诊建议与时间节点...',
 ]
 
+const defaultProfile = {
+  name: '张先生',
+  age: 58,
+  gender: '男',
+  diseases: ['高血压', '2型糖尿病'],
+  diagnosisDate: '待补充',
+  note: '',
+  bloodPressure: '',
+  bloodSugar: '',
+  doctorAdvice: '',
+  nextVisitDate: '',
+}
+
+const healthEntryItems = [
+  {
+    key: 'health-report',
+    title: '健康报告',
+    description: '查看近7日慢病指标与复诊建议',
+    icon: 'consult',
+    iconBg: 'bg-cyan-50',
+    iconColor: 'text-cyan-700',
+  },
+  {
+    key: 'intake-export',
+    title: '用药记录导出',
+    description: '导出服药与提醒历史用于就诊',
+    icon: 'plan',
+    iconBg: 'bg-emerald-50',
+    iconColor: 'text-emerald-700',
+  },
+  {
+    key: 'followup-pack',
+    title: '复诊资料包',
+    description: '自动汇总复诊所需关键信息',
+    icon: 'ai',
+    iconBg: 'bg-violet-50',
+    iconColor: 'text-violet-700',
+  },
+  {
+    key: 'reminder-setting',
+    title: '提醒设置',
+    description: '管理闹钟规则与提醒节奏',
+    icon: 'reminder',
+    iconBg: 'bg-amber-50',
+    iconColor: 'text-amber-700',
+  },
+  {
+    key: 'family-collab',
+    title: '家属协同',
+    description: '共享服药状态给家属（演示占位）',
+    icon: 'profile',
+    iconBg: 'bg-sky-50',
+    iconColor: 'text-sky-700',
+  },
+  {
+    key: 'privacy-auth',
+    title: '隐私与授权',
+    description: '管理数据授权与隐私设置',
+    icon: 'alert',
+    iconBg: 'bg-slate-100',
+    iconColor: 'text-slate-700',
+  },
+]
+
+const systemHelpItems = [
+  {
+    key: 'help',
+    title: '使用帮助',
+    description: '查看功能说明与常见问题',
+    icon: 'consult',
+    iconBg: 'bg-slate-100',
+    iconColor: 'text-slate-700',
+  },
+  {
+    key: 'feedback',
+    title: '反馈建议',
+    description: '提交优化建议或问题反馈',
+    icon: 'ai',
+    iconBg: 'bg-slate-100',
+    iconColor: 'text-slate-700',
+  },
+  {
+    key: 'about',
+    title: '关于慢病用药小管家',
+    description: '产品信息与版本说明',
+    icon: 'profile',
+    iconBg: 'bg-slate-100',
+    iconColor: 'text-slate-700',
+  },
+]
+
 function buildMockReportResult() {
   const nextVisit = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000)
-  const nextVisitDate = nextVisit.toISOString().slice(0, 10)
+  const year = nextVisit.getFullYear()
+  const month = `${nextVisit.getMonth() + 1}`.padStart(2, '0')
+  const day = `${nextVisit.getDate()}`.padStart(2, '0')
+  const nextVisitDate = `${year}-${month}-${day}`
 
   return {
     diseases: ['高血压', '2型糖尿病'],
@@ -27,15 +127,38 @@ function buildMockReportResult() {
 }
 
 function formatDateTime(value) {
-  if (!value) return '未生成'
-
+  if (!value) return '未更新'
   const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return '未生成'
-
+  if (Number.isNaN(date.getTime())) return '未更新'
   return date.toLocaleString('zh-CN', { hour12: false })
 }
 
+function resolveLatestUpdateTime(store) {
+  const timePool = []
+  const pushTime = (value) => {
+    if (!value) return
+    const parsed = new Date(value)
+    if (Number.isNaN(parsed.getTime())) return
+    timePool.push(parsed.getTime())
+  }
+
+  pushTime(store.demoMeta?.generatedAt)
+  ;(store.reminderInstances || []).forEach((item) => {
+    pushTime(item.completedAt)
+    pushTime(item.lastNotifiedAt)
+    pushTime(item.notifiedAt)
+  })
+  ;(store.intakeLogs || []).forEach((item) => pushTime(item.takenAt))
+  ;(store.adverseEvents || []).forEach((item) => pushTime(item.eventTime))
+
+  if (timePool.length === 0) return ''
+  const latest = Math.max(...timePool)
+  return new Date(latest).toISOString()
+}
+
 export default function ProfilePage() {
+  const store = useStoreSnapshot()
+
   const [message, setMessage] = useState('')
   const [editorOpen, setEditorOpen] = useState(false)
   const [reportOpen, setReportOpen] = useState(false)
@@ -44,23 +167,12 @@ export default function ProfilePage() {
   const [reportResult, setReportResult] = useState(null)
   const [parseHintIndex, setParseHintIndex] = useState(0)
 
-  const store = useStoreSnapshot()
-
-  const userProfile = useMemo(
-    () => store.userProfile || {
-      name: '张先生',
-      age: 58,
-      gender: '男',
-      diseases: ['高血压', '2型糖尿病'],
-      diagnosisDate: '待补充',
-      note: '',
-      bloodPressure: '',
-      bloodSugar: '',
-      doctorAdvice: '',
-      nextVisitDate: '',
-    },
-    [store.userProfile]
+  const userProfile = useMemo(() => store.userProfile || defaultProfile, [store.userProfile])
+  const demoMeta = useMemo(
+    () => store.demoMeta || { mode: 'default', generatedAt: '', label: '基础数据' },
+    [store.demoMeta]
   )
+  const isDefenseMode = demoMeta.mode === 'defense'
 
   const [form, setForm] = useState({
     name: userProfile.name || '',
@@ -102,13 +214,28 @@ export default function ProfilePage() {
     }
   }, [reportOpen, reportStep])
 
-  const demoMeta = store.demoMeta || {
-    mode: 'default',
-    generatedAt: '',
-    label: '基础数据',
-  }
+  const statCounts = useMemo(
+    () => ({
+      medications: (store.medications || []).length,
+      intakeLogs: (store.intakeLogs || []).length,
+      adverseEvents: (store.adverseEvents || []).length,
+      reminderRules: (store.reminderRules || []).length,
+      todayInstances: (store.reminderInstances || []).filter((item) => (item.scheduledAt || '').startsWith(getTodayDateKey())).length,
+    }),
+    [store]
+  )
 
-  const isDefenseMode = demoMeta.mode === 'defense'
+  const updatedAtText = useMemo(
+    () => formatDateTime(resolveLatestUpdateTime(store)),
+    [store]
+  )
+
+  const demoGeneratedText = useMemo(
+    () => formatDateTime(demoMeta.generatedAt),
+    [demoMeta.generatedAt]
+  )
+
+  const demoStatLine = `药品数 ${statCounts.medications} · 提醒规则/服药记录 ${statCounts.reminderRules}/${statCounts.intakeLogs} · 今日实例/不良反应 ${statCounts.todayInstances}/${statCounts.adverseEvents}`
 
   const handleChange = (event) => {
     const { name, value } = event.target
@@ -155,7 +282,6 @@ export default function ProfilePage() {
       setMessage('请先上传报告文件。')
       return
     }
-
     setReportStep('parsing')
     setParseHintIndex(0)
   }
@@ -190,9 +316,16 @@ export default function ProfilePage() {
     setMessage('已重置为基础 mock 数据。')
   }
 
+  const handlePlaceholderPress = (item) => {
+    window.alert(`${item.title} 功能建设中，当前为演示占位入口。`)
+  }
+
   return (
-    <section className="space-y-3">
-      <PageHeader title="我的" subtitle="用户档案编辑与比赛演示配置" />
+    <section className="space-y-4 pb-2">
+      <header className="px-1">
+        <h1 className="text-xl font-semibold text-slate-900">个人健康账户</h1>
+        <p className="mt-1 text-sm text-slate-500">慢病管理档案、健康数据入口与系统设置</p>
+      </header>
 
       {message ? (
         <article className="rounded-xl border border-emerald-100 bg-emerald-50 px-3 py-2 text-xs text-emerald-700">
@@ -200,258 +333,58 @@ export default function ProfilePage() {
         </article>
       ) : null}
 
-      <article className="rounded-2xl bg-white p-4 shadow-card">
-        <div className="flex items-start justify-between gap-2">
-          <div>
-            <p className="text-sm font-semibold text-slate-900">慢病档案</p>
-            <p className="mt-2 text-xs text-slate-600">
-              {userProfile.name} · {userProfile.gender} · {userProfile.age}岁
-            </p>
-            <p className="mt-1 text-xs text-slate-600">诊断：{(userProfile.diseases || []).join(' + ')}</p>
-            <p className="mt-1 text-xs text-slate-600">初诊日期：{userProfile.diagnosisDate || '待补充'}</p>
-            {userProfile.bloodPressure ? <p className="mt-1 text-xs text-slate-600">血压：{userProfile.bloodPressure}</p> : null}
-            {userProfile.bloodSugar ? <p className="mt-1 text-xs text-slate-600">血糖：{userProfile.bloodSugar}</p> : null}
-            {userProfile.nextVisitDate ? <p className="mt-1 text-xs text-slate-600">建议复诊：{userProfile.nextVisitDate}</p> : null}
-            <p className="mt-2 text-xs text-slate-500">{userProfile.note || userProfile.doctorAdvice || '暂无备注。'}</p>
-          </div>
+      <ProfileAccountCard
+        userProfile={userProfile}
+        updatedAtText={updatedAtText}
+      />
 
-          <div className="flex flex-col gap-2">
-            <button
-              type="button"
-              onClick={() => setEditorOpen(true)}
-              className="rounded-lg border border-medical-200 px-2 py-1 text-xs text-medical-700"
-            >
-              编辑档案
-            </button>
-            <button
-              type="button"
-              onClick={openReportImport}
-              className="rounded-lg bg-sky-600 px-2 py-1 text-xs text-white"
-            >
-              导入报告
-            </button>
-          </div>
-        </div>
-      </article>
+      <ProfileArchiveCard
+        userProfile={userProfile}
+        statCounts={statCounts}
+        onEdit={() => setEditorOpen(true)}
+        onImport={openReportImport}
+      />
 
-      <article className="rounded-2xl bg-white p-4 shadow-card">
-        <p className="text-sm font-semibold text-slate-900">演示数据状态</p>
-        <p className="mt-2 text-xs text-slate-600">当前模式：{isDefenseMode ? '答辩演示模式' : '基础数据模式'}</p>
-        <p className="mt-1 text-xs text-slate-600">数据标签：{demoMeta.label || '基础数据'}</p>
-        <p className="mt-1 text-xs text-slate-600">生成时间：{formatDateTime(demoMeta.generatedAt)}</p>
-        <p className="mt-1 text-xs text-slate-500">
-          药品数 {(store.medications || []).length} · 提醒规则 {(store.reminderRules || []).length} · 今日实例 {(store.reminderInstances || []).filter((item) => (item.scheduledAt || '').startsWith(new Date().toISOString().slice(0, 10))).length}
-        </p>
-      </article>
+      <ProfileListSection
+        title="健康数据入口"
+        items={healthEntryItems}
+        onPress={handlePlaceholderPress}
+      />
 
-      <article className="rounded-2xl bg-white p-4 shadow-card">
-        <p className="text-sm font-semibold text-slate-900">演示工具</p>
-        <p className="mt-2 text-xs text-slate-500">
-          一键生成完整用户旅程数据，快速演示“问诊 - 购药 - 用药 - 续方”闭环。
-        </p>
+      <ProfileDemoModeCard
+        demoMeta={demoMeta}
+        isDefenseMode={isDefenseMode}
+        statLine={demoStatLine}
+        generatedAtText={demoGeneratedText}
+        onGenerate={handleGenerateDemo}
+        onReset={handleResetDemo}
+      />
 
-        <button
-          type="button"
-          onClick={handleGenerateDemo}
-          className="mt-3 w-full rounded-xl bg-medical-600 px-3 py-2 text-sm font-medium text-white transition hover:bg-medical-700"
-        >
-          生成答辩演示数据
-        </button>
+      <ProfileListSection
+        title="系统与帮助"
+        items={systemHelpItems}
+        onPress={handlePlaceholderPress}
+      />
 
-        <button
-          type="button"
-          onClick={handleResetDemo}
-          className="mt-2 w-full rounded-xl bg-slate-900 px-3 py-2 text-sm font-medium text-white"
-        >
-          重置演示数据
-        </button>
-      </article>
+      <ProfileEditSheet
+        open={editorOpen}
+        form={form}
+        onClose={() => setEditorOpen(false)}
+        onChange={handleChange}
+        onSubmit={handleSaveProfile}
+      />
 
-      {editorOpen ? (
-        <div className="sheet-overlay z-40">
-          <form
-            onSubmit={handleSaveProfile}
-            className="sheet-panel"
-          >
-            <div className="mb-3 flex items-center justify-between">
-              <p className="text-base font-semibold text-slate-900">编辑慢病档案</p>
-              <button
-                type="button"
-                onClick={() => setEditorOpen(false)}
-                className="rounded-lg bg-slate-100 px-2 py-1 text-xs text-slate-700"
-              >
-                关闭
-              </button>
-            </div>
-
-            <div className="space-y-3">
-              <input
-                name="name"
-                value={form.name}
-                onChange={handleChange}
-                placeholder="姓名"
-                className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-medical-600"
-              />
-
-              <div className="grid grid-cols-2 gap-2">
-                <input
-                  name="age"
-                  type="number"
-                  min="1"
-                  value={form.age}
-                  onChange={handleChange}
-                  placeholder="年龄"
-                  className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-medical-600"
-                />
-
-                <select
-                  name="gender"
-                  value={form.gender}
-                  onChange={handleChange}
-                  className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-medical-600"
-                >
-                  <option value="男">男</option>
-                  <option value="女">女</option>
-                  <option value="其他">其他</option>
-                </select>
-              </div>
-
-              <input
-                name="diseases"
-                value={form.diseases}
-                onChange={handleChange}
-                placeholder="慢病类型，逗号分隔"
-                className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-medical-600"
-              />
-
-              <input
-                name="diagnosisDate"
-                type="date"
-                value={form.diagnosisDate}
-                onChange={handleChange}
-                className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-medical-600"
-              />
-
-              <textarea
-                name="note"
-                value={form.note}
-                onChange={handleChange}
-                rows={3}
-                placeholder="备注"
-                className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-medical-600"
-              />
-
-              <button
-                type="submit"
-                className="w-full rounded-xl bg-medical-600 px-3 py-2 text-sm font-medium text-white"
-              >
-                保存档案
-              </button>
-            </div>
-          </form>
-        </div>
-      ) : null}
-
-      {reportOpen ? (
-        <div className="sheet-overlay z-40">
-          <div className="sheet-panel">
-            <div className="mb-3 flex items-center justify-between">
-              <p className="text-base font-semibold text-slate-900">导入报告（AI解析演示）</p>
-              <button
-                type="button"
-                onClick={closeReportImport}
-                className="rounded-lg bg-slate-100 px-2 py-1 text-xs text-slate-700"
-              >
-                关闭
-              </button>
-            </div>
-
-            <div className="mb-3 grid grid-cols-4 gap-1 text-[11px]">
-              {['上传文件', 'AI解析中', '结果预览', '确认完成'].map((label, index) => {
-                const stepMap = { upload: 0, parsing: 1, result: 2, success: 3 }
-                const active = index <= stepMap[reportStep]
-
-                return (
-                  <span
-                    key={label}
-                    className={`rounded-lg px-2 py-1 text-center ${active ? 'bg-medical-100 text-medical-700' : 'bg-slate-100 text-slate-500'}`}
-                  >
-                    {label}
-                  </span>
-                )
-              })}
-            </div>
-
-            {reportStep === 'upload' ? (
-              <div className="space-y-3">
-                <label className="block rounded-2xl border border-dashed border-medical-200 bg-medical-50 p-4 text-center">
-                  <p className="text-sm font-medium text-medical-700">上传报告（pdf/excel/jpg/png/txt）</p>
-                  <p className="mt-1 text-xs text-slate-500">仅做 AI 解析架构展示，不进行真实解析</p>
-                  <input
-                    type="file"
-                    accept=".pdf,.xls,.xlsx,.csv,.txt,.jpg,.jpeg,.png"
-                    className="mt-3 block w-full text-xs text-slate-600"
-                    onChange={(event) => {
-                      const file = event.target.files?.[0] || null
-                      setReportFile(file)
-                    }}
-                  />
-                </label>
-
-                {reportFile ? (
-                  <p className="text-xs text-slate-600">已选择文件：{reportFile.name}</p>
-                ) : (
-                  <p className="text-xs text-slate-500">尚未选择文件</p>
-                )}
-
-                <button
-                  type="button"
-                  onClick={startMockParse}
-                  className="w-full rounded-xl bg-medical-600 px-3 py-2 text-sm font-medium text-white"
-                >
-                  开始AI解析
-                </button>
-              </div>
-            ) : null}
-
-            {reportStep === 'parsing' ? (
-              <div className="rounded-2xl bg-slate-50 p-4 text-center">
-                <div className="mx-auto h-8 w-8 animate-spin rounded-full border-2 border-medical-200 border-t-medical-600" />
-                <p className="mt-3 text-sm font-medium text-slate-700">AI解析中...</p>
-                <p className="mt-1 text-xs text-slate-500">{reportParseHints[parseHintIndex]}</p>
-              </div>
-            ) : null}
-
-            {reportStep === 'result' && reportResult ? (
-              <div className="space-y-3">
-                <div className="rounded-2xl bg-slate-50 p-3 text-xs text-slate-700">
-                  <p className="font-semibold text-slate-900">mock 报告解析结果</p>
-                  <p className="mt-2">慢病类型：{reportResult.diseases.join('、')}</p>
-                  <p className="mt-1">血压：{reportResult.bloodPressure}</p>
-                  <p className="mt-1">血糖：{reportResult.bloodSugar}</p>
-                  <p className="mt-1">医生建议：{reportResult.doctorAdvice}</p>
-                  <p className="mt-1">建议复诊时间：{reportResult.nextVisitDate}</p>
-                </div>
-
-                <button
-                  type="button"
-                  onClick={confirmReportImport}
-                  className="w-full rounded-xl bg-medical-600 px-3 py-2 text-sm font-medium text-white"
-                >
-                  确认更新档案
-                </button>
-              </div>
-            ) : null}
-
-            {reportStep === 'success' ? (
-              <div className="rounded-2xl border border-emerald-100 bg-emerald-50 p-4 text-center">
-                <p className="text-sm font-semibold text-emerald-700">导入成功</p>
-                <p className="mt-1 text-xs text-emerald-700">报告解析结果已写入用户档案。</p>
-              </div>
-            ) : null}
-          </div>
-        </div>
-      ) : null}
+      <ProfileReportImportSheet
+        open={reportOpen}
+        reportStep={reportStep}
+        reportFile={reportFile}
+        reportResult={reportResult}
+        parseHint={reportParseHints[parseHintIndex]}
+        onClose={closeReportImport}
+        onPickFile={setReportFile}
+        onStartParse={startMockParse}
+        onConfirm={confirmReportImport}
+      />
     </section>
   )
 }
