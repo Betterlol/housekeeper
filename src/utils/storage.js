@@ -295,7 +295,9 @@ function buildLegacyRulesFromMedications(medications) {
   medications.forEach((medication, medIndex) => {
     const legacyTimes = Array.isArray(medication.times) && medication.times.length > 0
       ? medication.times
-      : ['08:00']
+      : []
+
+    if (legacyTimes.length === 0) return
 
     legacyTimes.forEach((time, timeIndex) => {
       rules.push(
@@ -390,6 +392,9 @@ function upsertFinalLogForInstance(store, instance, reason = '') {
 
 function normalizeStoreSchema(rawStore = {}) {
   const base = rawStore || {}
+  const isLegacySource = !base.schemaVersion || Number(base.schemaVersion) < 2
+  const hasReminderRulesField = Array.isArray(base.reminderRules)
+  const hasReminderInstancesField = Array.isArray(base.reminderInstances)
 
   const medications = Array.isArray(base.medications)
     ? base.medications.map((item, index) => normalizeMedication(item, index))
@@ -399,7 +404,7 @@ function normalizeStoreSchema(rawStore = {}) {
     ? base.reminderRules.map((item, index) => normalizeReminderRule(item, index))
     : []
 
-  if (reminderRules.length === 0) {
+  if (isLegacySource && !hasReminderRulesField && reminderRules.length === 0) {
     reminderRules = buildLegacyRulesFromMedications(medications)
   }
 
@@ -411,7 +416,7 @@ function normalizeStoreSchema(rawStore = {}) {
     ? base.intakeLogs.map((item, index) => normalizeIntakeLog(item, index))
     : []
 
-  if (reminderInstances.length === 0 && legacyLogs.length > 0) {
+  if (isLegacySource && !hasReminderInstancesField && reminderInstances.length === 0 && legacyLogs.length > 0) {
     reminderInstances = legacyLogs.map((log, index) => {
       const rule = ensureRuleForLegacyLog(reminderRules, log)
       return mapLegacyLogToInstance(log, rule, index)

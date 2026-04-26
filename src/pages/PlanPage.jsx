@@ -185,8 +185,6 @@ export default function PlanPage() {
         startDate: new Date().toISOString().slice(0, 10),
         endDate: '',
         sourceLabel: '处方导入',
-        frequencyPerDay: 1,
-        times: [item.suggestedReminderTime],
       })
 
       if (importMode === 'plan_and_reminder') {
