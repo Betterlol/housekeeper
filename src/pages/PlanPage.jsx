@@ -242,7 +242,7 @@ export default function PlanPage() {
 
   return (
     <section className="space-y-4 pb-2">
-      <PlanHeader onImport={openImportSheet} onCreate={openCreate} summary={summary} insight={topInsight} />
+      <PlanHeader onImport={openImportSheet} onCreate={openCreate} />
       <PlanOverviewCards summary={summary} />
       <PlanInsightBanner insight={topInsight} onClick={handleInsightClick} />
 
