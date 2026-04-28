@@ -85,6 +85,14 @@ function nowIso() {
   return toLocalDateTime(new Date())
 }
 
+function createUniqueId(prefix) {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return `${prefix}-${crypto.randomUUID()}`
+  }
+
+  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+}
+
 function addMinutesToNow(minutes) {
   return toLocalDateTime(new Date(Date.now() + Number(minutes || 0) * 60 * 1000))
 }
@@ -874,8 +882,8 @@ export function getTodayReminderItems(dateKey = getTodayDateKey()) {
   return getTodayReminderItemsFromStore(store, dateKey)
 }
 
-export function getReminderRulesWithToday(dateKey = getTodayDateKey()) {
-  const store = ensureTodayReminderInstances(dateKey)
+export function getReminderRulesWithTodayFromStore(storeArg, dateKey = getTodayDateKey()) {
+  const store = storeArg || getStore()
   const todayItems = getTodayReminderItemsFromStore(store, dateKey)
 
   return (store.reminderRules || [])
@@ -913,6 +921,10 @@ export function getReminderRulesWithToday(dateKey = getTodayDateKey()) {
     })
     .filter((item) => item.medication)
     .sort((a, b) => compareIso(a.time, b.time))
+}
+
+export function getReminderRulesWithToday(dateKey = getTodayDateKey()) {
+  return getReminderRulesWithTodayFromStore(getStore(), dateKey)
 }
 
 export function getReminderQueueItems() {
@@ -1008,7 +1020,7 @@ export function addReminderRule(payload) {
   const createdAt = nowIso()
 
   const rule = normalizeReminderRule({
-    id: `rule-${Date.now()}`,
+    id: createUniqueId('rule'),
     medicationId: payload.medicationId,
     time: payload.time,
     enabled: payload.enabled,

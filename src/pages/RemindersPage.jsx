@@ -5,7 +5,7 @@ import useStoreSnapshot from '../hooks/useStoreSnapshot'
 import {
   addReminderRule,
   deleteReminderRule,
-  getReminderRulesWithToday,
+  getReminderRulesWithTodayFromStore,
   markAllTodayTaken,
   markReminderMissed,
   markReminderTaken,
@@ -78,7 +78,7 @@ export default function RemindersPage() {
 
   const store = useStoreSnapshot({ ensureToday: true })
   const medications = store.medications || []
-  const rules = useMemo(() => getReminderRulesWithToday(), [store])
+  const rules = useMemo(() => getReminderRulesWithTodayFromStore(store), [store])
 
   const pendingCount = rules.filter((item) => item.todayStatus === 'pending').length
   const takenCount = rules.filter((item) => item.todayStatus === 'taken').length
